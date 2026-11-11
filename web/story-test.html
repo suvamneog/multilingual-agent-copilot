@@ -51,7 +51,9 @@ async function settle(w, timeout) {
   let last = "", stable = 0;
   await sleep(250);
   while (Date.now() - t0 < timeout) {
-    const busy = chat.querySelector(".typing");
+    /* a wording answer still streaming has its .ans text but not yet the final .meta line */
+    const busy = chat.querySelector(".typing") ||
+      [...chat.querySelectorAll(".ans")].some((a) => a.parentElement && !a.parentElement.querySelector(".meta"));
     const now = chat.innerText;
     if (!busy && now === last) { if (++stable >= 3) return true; } else stable = 0;
     last = now;

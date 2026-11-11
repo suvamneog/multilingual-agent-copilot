@@ -587,6 +587,17 @@ def _wording_waits(policy_id: str | None) -> dict:
     return out
 
 
+def _day1_supported(pool: str, words: list[str]) -> bool:
+    """A day-1 claim needs a day-1 phrase in the cited text close to the question's topic (within 300 chars),
+    not just anywhere in some clause about something else."""
+    low = pool.lower()
+    for m in DAY1_SRC.finditer(pool):
+        win = low[max(0, m.start() - 300): m.end() + 300]
+        if not words or any(_stem(w) in win for w in words):
+            return True
+    return False
+
+
 def verify(answer: str, cited: list[int], clauses: list[dict], question: str, policy_id: str | None = None) -> dict:
     """Drop what the cited clauses do not support; refuse when the clauses are not about the question.
 
@@ -616,12 +627,12 @@ def verify(answer: str, cited: list[int], clauses: list[dict], question: str, po
                 cited = sorted(set(cited) | {holder[0]})
                 bad = []
         # a wait stated as the PED / listed-illness wait must be the one this product's wording states
-        months = {int(x) for x in re.findall(r"(\d{1,2})\s*(?:\(\s*\w+\s*\)\s*)?months", s)}
+        months = {int(x) for x in re.findall(r"(\d{1,2})[\s-]*(?:\(\s*\w+\s*\)\s*)?months?\b", s)}
         if months and PED_SENT.search(s) and waits.get("ped") and not months & waits["ped"]:
             bad.append("PED wait " + "/".join(map(str, sorted(months))))
         elif months and WAIT_SENT.search(s) and waits.get("spec") and not months & waits["spec"]:
             bad.append("listed-illness wait " + "/".join(map(str, sorted(months))))
-        if bad or (DAY1_ANS.search(s) and not DAY1_SRC.search(pool)):
+        if bad or (DAY1_ANS.search(s) and not _day1_supported(pool, words)):
             dropped.append(s)
             continue
         kept.append(s)
