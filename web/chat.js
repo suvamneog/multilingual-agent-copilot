@@ -442,13 +442,17 @@ async function rateCard(p, text, box) {
   /* the Quickinsure money chart: one fixed profile, shown with that profile so it is never read as this customer's price */
   const pq = r?.profile_quote;
   const rules = r?.rules ? `<p class="small">${esc(T.rules)}</p>` : "";
-  const pqHtml = !pq ? "" : pq.found
+  /* the money chart is for a 55-year-old: a known age outside 51-55 never sees that figure */
+  const offProfile = pq?.found && age !== null && (age < 51 || age > 55);
+  const pqHtml = !pq ? "" : offProfile
+    ? `<div class="kit" data-money="age"><p><b>Quickinsure money chart:</b> ${esc(T.offAge(age))}</p></div>`
+    : pq.found
     ? `<div class="kit" data-money="1"><p><b>Quickinsure money chart:</b> <b>${inr(pq.annual_premium_inr)} ${esc(T.perYear)}</b></p>
         <p class="small">${esc(T.profile)}: ${esc(pq.profile)}. ${esc(T.source)}: ${esc(pq.source || "")}${pq.uin ? ` (UIN ${esc(pq.uin)})` : ""}, ${esc(T.checked)} ${esc(pq.checked)}.${pq.notes ? ` ${esc(pq.notes)}.` : ""}</p>
         ${pq.warning ? `<p class="stopline">${esc(T.older)}</p>` : ""}</div>`
     : `<div class="kit" data-money="0"><p><b>Quickinsure money chart:</b> ${esc(T.notFound)}</p>
         <p class="small">${esc(T.profile)}: ${esc(pq.profile)}, ${esc(pq.checked)}. ${esc(T.noEstimate)}</p></div>`;
-  if (pq?.found) found();
+  if (pq?.found && !offProfile) found();
   if (!r?.available) { if (pq) box.innerHTML = pqHtml + rules; return; }
   const src = `<p class="small">${esc(T.source)}: <a href="${esc(r.source_url)}" target="_blank">${esc(r.source)}</a> (UIN ${esc(r.uin)}), ${esc(T.checked)} ${esc(r.checked_on)}. ${esc(T.basis)}</p>`;
   if (r.need === "age") {
@@ -465,6 +469,7 @@ const RATE_T = {
   en: { badge: "Premium from rate chart", perYear: "per year", profile: "Profile", source: "Source", checked: "checked",
     older: "This figure is from an older version of the product. Verify with the insurer before quoting.",
     notFound: "Not found — get a live quote from the insurer.", noEstimate: "No figure is estimated.",
+    offAge: (a) => `the money chart is only for a 55-year-old, so it is not shown for age ${a}. Get a live quote from the insurer for this age.`,
     rules: "Healthy-person rate, before any loading for diabetes or another illness; the insurer decides loading after the health check (usually 10-40%, up to 100-150% in some cases). GST on individual health insurance is 0% since 22 Sep 2025.",
     basis: "Base premium, 1 year, before discounts, loadings and optional covers. Final premium is set by the insurer after the health check.",
     askAge: "The insurer's official rate chart is loaded. Tell me the age and city (for example “premium for 55, Pune”) for the exact chart price.",
@@ -473,6 +478,7 @@ const RATE_T = {
   hinglish: { badge: "Rate chart se premium", perYear: "saal ka", profile: "Profile", source: "Source", checked: "check kiya",
     older: "Yeh figure product ke purane version ka hai. Quote dene se pehle insurer se confirm karo.",
     notFound: "Nahi mila — insurer se live quote lo.", noEstimate: "Koi andaaza nahi lagaya.",
+    offAge: (a) => `money chart sirf 55 saal ke liye hai, isliye ${a} saal ke liye nahi dikhaya. Is umar ke liye insurer se live quote lo.`,
     rules: "Healthy person ka rate hai, diabetes ya bimari ki loading se pehle; loading insurer health check ke baad tay karta hai (aam taur par 10-40%, kabhi 100-150% tak). Individual health insurance par GST 22 Sep 2025 se 0% hai.",
     basis: "Base premium, 1 saal, discount, loading aur optional cover se pehle. Final premium insurer health check ke baad batata hai.",
     askAge: "Insurer ka official rate chart loaded hai. Umar aur shehar batao (jaise “premium for 55, Pune”), main exact chart price dikhaunga.",
@@ -481,6 +487,7 @@ const RATE_T = {
   hi: { badge: "रेट चार्ट से प्रीमियम", perYear: "सालाना", profile: "प्रोफ़ाइल", source: "स्रोत", checked: "जाँचा",
     older: "यह आंकड़ा प्रोडक्ट के पुराने version का है। quote से पहले इंश्योरर से कन्फ़र्म करें।",
     notFound: "नहीं मिला — इंश्योरर से live quote लें।", noEstimate: "कोई अनुमान नहीं लगाया।",
+    offAge: (a) => `money chart सिर्फ़ 55 साल के लिए है, इसलिए ${a} साल के लिए नहीं दिखाया। इस उम्र के लिए इंश्योरर से live quote लें।`,
     rules: "स्वस्थ व्यक्ति का रेट, डायबिटीज़ या बीमारी की loading से पहले; loading इंश्योरर हेल्थ चेक के बाद तय करता है (आमतौर पर 10-40%, कभी 100-150% तक)। व्यक्तिगत हेल्थ इंश्योरेंस पर GST 22 सितंबर 2025 से 0% है।",
     basis: "बेस प्रीमियम, 1 साल, छूट, loading और optional cover से पहले। अंतिम प्रीमियम इंश्योरर हेल्थ चेक के बाद बताता है।",
     askAge: "इंश्योरर का official rate chart लोड है। उम्र और शहर बताइए (जैसे “premium for 55, Pune”)।",
