@@ -604,7 +604,7 @@
     const cite = citePage(f);
     let lead;
     if (intentId === "ped-wait") lead = `Pre-existing wait (diabetes, BP…): ${f.value} months. Cover starts ${waitEndDate(f.value)} if the policy starts today.`;
-    else if (intentId === "room-rent") lead = `Room rent: ${f.value}.`;
+    else if (intentId === "room-rent") lead = `Room rent: ${String(f.value).replace(/\.+$/, "")}.`;
     else if (intentId === "entry-age") lead = `Maximum entry age: ${f.value}${f.unit === "years" ? " years" : ""}.`;
     else lead = `${f.value}.`;
     return { lead, note: f.note || null, cite, section: f.section || null, quote: f.quote || null };
@@ -687,9 +687,9 @@
       add(f.entry_age_max, t(`Do not sign up anyone older than ${f.entry_age_max.value} at entry.`, `${f.entry_age_max.value} साल से ज़्यादा उम्र वाले को एंट्री न दें।`, `${f.entry_age_max.value} saal se zyada umar wale ko entry mat do.`));
     }
     if (!f.premium_inr?.stated) {
-      add(null, t("Do not quote a premium — it is not in this wording; it comes from the insurer rate card after the health check.",
-        "प्रीमियम मत बताएँ — यह इस वर्डिंग में नहीं है; हेल्थ चेक के बाद इंश्योरर के रेट कार्ड से आता है।",
-        "Premium mat batao — yeh is wording mein nahi hai; health check ke baad insurer ke rate card se aata hai."));
+      add(null, t("Do not quote a premium as final — the insurer sets it after the health check, with loading for diabetes or other illness.",
+        "प्रीमियम को final न बताएँ — इंश्योरर हेल्थ चेक के बाद तय करता है, डायबिटीज़ या बीमारी की loading के साथ।",
+        "Premium ko final mat bolo — insurer health check ke baad tay karta hai, diabetes ya bimari ki loading ke saath."));
     }
     return out;
   }

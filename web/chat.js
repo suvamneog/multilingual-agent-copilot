@@ -497,8 +497,7 @@ async function rateCard(p, text, box) {
   /* the money chart is for a 55-year-old: a known age outside 51-55 never sees that figure */
   const offProfile = pq?.found && age !== null && (age < 51 || age > 55);
   const pqHtml = !pq || offProfile || !pq.found ? "" : pq.found
-    ? `<div class="kit" data-money="1"><p><b>Premium:</b> <b>${inr(pq.annual_premium_inr)} ${esc(T.perYear)}</b></p>
-        <p class="small">${esc(T.profile)}: ${esc(pq.profile)}. ${esc(T.source)}: ${esc(pq.source || "")}${pq.uin ? ` (UIN ${esc(pq.uin)})` : ""}, ${esc(T.checked)} ${esc(pq.checked)}.${pq.notes ? ` ${esc(pq.notes)}.` : ""}</p>
+    ? `<div class="kit" data-money="1"><p class="small">${esc(T.profile)}: ${esc(pq.profile)}. ${esc(T.source)}: ${esc(pq.source || "")}${pq.uin ? ` (UIN ${esc(pq.uin)})` : ""}, ${esc(T.checked)} ${esc(pq.checked)}.${pq.notes ? ` ${esc(pq.notes)}.` : ""}</p>
         ${pq.warning ? `<p class="stopline">${esc(T.older)}</p>` : ""}</div>`
     : `<div class="kit" data-money="0"><p><b>Premium:</b> ${esc(T.notFound)}</p>
         <p class="small">${esc(T.profile)}: ${esc(pq.profile)}, ${esc(pq.checked)}. ${esc(T.noEstimate)}</p></div>`;

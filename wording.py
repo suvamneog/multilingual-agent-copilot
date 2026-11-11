@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT / "ingest"))
 import build_facts as bf  # noqa: E402  (parsers only; its catalogue writer is never called)
 
 CACHE = ROOT / "data" / "wording_facts.json"
-VERSION = 21  # bump when a parser changes, so cached facts are rebuilt
+VERSION = 22  # bump when a parser changes, so cached facts are rebuilt
 _LOCK = threading.Lock()
 _MEM: dict | None = None
 
@@ -204,6 +204,12 @@ def ped(pages, off):
                         "The longest is used for ranking.") if len(set(ms)) > 1 else None
                 return bf.fact(pages, p["page"], t, q, a, max(ms), "months", off, note)
     if optional_only:
+        # the standard Code-Excl01 sentence is the base exclusion even when an optional cover is described
+        # higher up the same page; only a quote that itself rewrites the wait ("if opted", "shall read as follows")
+        # is the optional cover
+        if re.search(r"Excl\s*0?1", optional_only.get("section") or "", re.I) and \
+           not re.search(r"read as follows|if opted|opted for|optional|buy\s*back|in lieu", optional_only.get("quote") or "", re.I):
+            return optional_only
         optional_only["note"] = "Only an optional cover's wait was found; the base wait is not readable in this wording."
         optional_only["optional"] = True
         return optional_only
