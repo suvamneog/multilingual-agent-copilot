@@ -647,7 +647,7 @@
     const f = p.facts || {};
     const out = [];
     const t = (en, hi, hinglish) => (L === "hi" ? hi : L === "hinglish" ? hinglish : en);
-    const add = (fact, text) => out.push({ text, cite: fact ? pageLabel(citePage(fact)) : null });
+    const add = (fact, text) => out.push({ text, cite: fact ? pageLabel(citePage(fact)) : null, quote: fact?.quote, section: fact?.section });
     const ped = f.ped_wait_months;
     if (w?.carved) {
       add(w.fact, t(`Never say any pre-existing illness other than ${w.carvedFor} is covered from day one.`,
@@ -808,7 +808,7 @@
         : L === "hinglish" ? `${condWord}: wording ke hisaab se iska PED wait nahi hai — policy start hote hi cover.`
           : `For ${condWord}, the wording lifts the pre-existing wait — covered from the start.`;
     }
-    return { say: say.filter(Boolean), whatsapp: wa, waitEnd: end ? { date: end, months: w.months, cite: pageLabel(citePage(w.fact)) } : null, papers, claimPapers, dont, labels };
+    return { say: say.filter(Boolean), whatsapp: wa, waitEnd: end ? { date: end, months: w.months, cite: pageLabel(citePage(w.fact)), quote: w.fact?.quote, section: w.fact?.section } : null, papers, claimPapers, dont, labels };
   }
 
   window.QPCore = {

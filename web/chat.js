@@ -42,7 +42,17 @@ const CHIPS_PRODUCT = [
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const withRefs = (text, id) => esc(text).replace(/\[(\d+)\]/g, (m, n) => `<span class="ref" data-b="${id}" data-n="${n}">${n}</span>`);
 const ms = (t0) => Math.max(1, Math.round(performance.now() - t0));
-const pdfLink = (p, cite) => (cite?.pdf ? `<a class="open" href="/pdf/${esc(C.policyIdOf(p))}#page=${cite.pdf}" target="_blank" rel="noopener">${esc(C.pageLabel(cite))} &#8599;</a>` : "");
+/* every citation opens /cite in a new tab: the real PDF page with the exact quoted line highlighted */
+const pageNo = (s) => { const m = String(s ?? "").match(/(?:PDF page|page)\s*(\d+)/i); return m ? +m[1] : null; };
+const citeHref = (pid, page, quote, section, product) =>
+  `/cite/${encodeURIComponent(pid)}?${new URLSearchParams({ page, q: quote || "", s: section || "", product: product || "" })}`;
+const citeA = (p, page, quote, section, label) => {
+  const pid = p.policy_id || C.policyIdOf(p);
+  const text = label || `PDF page ${page}`;
+  return page ? `<a class="citelink" href="${esc(citeHref(pid, page, quote, section, C.fullName(p)))}" target="_blank" rel="noopener" title="Open PDF page ${page} with this line highlighted">${esc(text)} &#8599;</a>`
+    : `<span class="cite">${esc(text)}</span>`;
+};
+const pdfLink = (p, cite, quote, section) => (cite?.pdf ? citeA(p, cite.pdf, quote, section, C.pageLabel(cite)) : "");
 let BID = 0;
 
 /* long answers: put the start of the bot bubble at the top of the pane,
@@ -269,9 +279,9 @@ function pitchHtml(p, lang) {
       <div class="kit__row"><button type="button" class="btn btn--sm" data-act="copy" data-src="wa${id}">Copy</button>
       <a class="btn btn--sm btn--ghost" href="https://wa.me/?text=${encodeURIComponent(k.whatsapp)}" target="_blank" rel="noopener">WhatsApp</a></div></div>
     <div class="kit"><p class="kit__t">${esc(L.wait)}</p>${k.waitEnd
-      ? `<p><b>${esc(k.waitEnd.date)}</b> — ${k.waitEnd.months} months. <span class="cite">${esc(k.waitEnd.cite)}</span></p>`
+      ? `<p><b>${esc(k.waitEnd.date)}</b> — ${k.waitEnd.months} months. ${citeA(p, pageNo(k.waitEnd.cite), k.waitEnd.quote, k.waitEnd.section, k.waitEnd.cite)}</p>`
       : `<p>${lang === "en" ? "Not written in this product." : lang === "hi" ? "इस प्रॉडक्ट में नहीं लिखा।" : "Is product mein nahi likha."}</p>`}</div>
-    ${kitLists(k, L, lang)}
+    ${kitLists(k, L, lang, p)}
   </div>`;
 }
 
@@ -307,8 +317,9 @@ function recCard(c, rank, r, need, lang) {
     <span class="opt__ins">${esc(p.insurer)}${S.mine.has(p.insurer) ? ` <i class="tag tag--mine">Yours</i>` : ""}</span>
     <span class="opt__name">${esc(C.fullName(p))}</span>
     <p class="rec__why">${esc(c.why)}</p>
-    ${dateLine ? `<p class="rec__line">${dateLine} <span class="cite">${esc(cite)}</span></p>` : ""}
-    ${c.cite?.quote ? `<details class="how"><summary>${lang === "en" ? "Exact line" : "Exact line"}</summary><q>${esc(c.cite.quote)}</q></details>` : ""}
+    ${dateLine ? `<p class="rec__line">${dateLine}</p>` : ""}
+    ${c.cite?.quote ? `<q class="citeq">“${esc(c.cite.quote.length > 260 ? c.cite.quote.slice(0, 257) + "…" : c.cite.quote)}”</q>` : ""}
+    ${c.cite ? `<p class="cite"><span data-heading>${c.cite.section ? `${esc(c.cite.section)} · ` : ""}</span>${citeA(p, c.cite.pdf_page, c.cite.quote, c.cite.section, c.cite.page)}</p>` : ""}
     <div class="rec__actions">
       <button type="button" class="btn${rank === 1 ? "" : " btn--ghost"} btn--sm" data-act="pick" data-id="${esc(p.id)}">${esc(L.pick)}</button>
       <button type="button" class="pitch-btn" data-act="pitch" aria-expanded="false">${esc(L.pitch)} <span aria-hidden="true">▾</span></button>
@@ -316,6 +327,20 @@ function recCard(c, rank, r, need, lang) {
     <p class="rec__line" data-money-card="${esc(p.id)}"></p>
     ${pitchHtml(p, lang)}
   </div>`;
+}
+
+/* replace a coarse section label with the numbered clause heading read from the PDF page above the quote */
+function fillHeadings(root) {
+  root.querySelectorAll("[data-heading]").forEach(async (el) => {
+    const a = el.parentElement.querySelector("a.citelink");
+    if (!a) return;
+    const u = new URL(a.getAttribute("href"), location.href);
+    const pid = decodeURIComponent(u.pathname.split("/").pop());
+    try {
+      const r = await (await fetch(`/api/cite-heading?${new URLSearchParams({ policy_id: pid, page: u.searchParams.get("page"), q: u.searchParams.get("q") || "" })}`)).json();
+      if (r.heading) el.textContent = `${r.heading} · `;
+    } catch { /* keep the label from the wording facts */ }
+  });
 }
 
 /* fill the money line on each ranked card once its figure arrives */
@@ -366,12 +391,21 @@ async function needFirst(localNeed) {
     ? `<details class="others"><summary>${lang === "hi" ? "बाकी क्यों नहीं" : lang === "hinglish" ? "Baaki kyun nahi" : "Why not the others"}</summary><ul>${r.others.map((o) =>
         `<li><b>${esc(o.products.join(", "))}</b> — ${esc(o.reason)}</li>`).join("")}</ul></details>`
     : "";
-  const msg = add("bot rich", `${answer.map((line, i) => `<p class="${i === 0 ? "lead" : ""}">${esc(line)}</p>`).join("")}${scope}
+  /* "(PDF page 23)" inside a sentence links to that plan's cited line */
+  const linkLine = (line) => {
+    let s = esc(line);
+    const c = tops.find((t) => line.includes(t.label) || line.includes(t.name));
+    const p = c && S.byId.get(c.id);
+    if (p && c.cite) s = s.replace(/PDF page (\d+)/, (m, n) => +n === c.cite.pdf_page ? citeA(p, +n, c.cite.quote, c.cite.section, m).replace(" &#8599;", "") : m);
+    return s;
+  };
+  const msg = add("bot rich", `${answer.map((line, i) => `<p class="${i === 0 ? "lead" : ""}">${linkLine(line)}</p>`).join("")}${scope}
     ${cards ? `<div class="recs">${cards}</div>` : ""}
     ${watch}
     ${others}
     <div class="meta">${lang === "hi" ? `${r.checked} पॉलिसी की वर्डिंग · ${ms(t0)} ms` : lang === "hinglish" ? `${r.checked} policies ki wording check · ${ms(t0)} ms` : `Read ${r.checked} policy wordings in ${ms(t0)} ms`}</div>`);
   fillMoney(msg, need, lang);
+  fillHeadings(msg);
 }
 
 /* ── feature 4: simple vs hard ─────────────────────────── */
@@ -550,11 +584,13 @@ function answer(p, text) {
     const a = C.simpleAnswer(p, intent.id);
     if (a?.notWritten) return notWritten(p, a.note);
     if (a) {
-      return add("bot", `${stopNote}<span class="badge b-ok">Fast answer</span><p class="lead">${esc(a.lead)}</p>
+      const fe = add("bot", `${stopNote}<span class="badge b-ok">Fast answer</span><p class="lead">${esc(a.lead)}</p>
         ${a.note ? `<p class="small">${esc(a.note)}</p>` : ""}
-        <p class="cite">${esc(C.pageLabel(a.cite))}${a.section ? ` · ${esc(a.section)}` : ""} ${pdfLink(p, a.cite)}</p>
-        ${a.quote ? `<details class="how"><summary>Exact line</summary><q>${esc(a.quote)}</q></details>` : ""}
+        ${a.quote ? `<q class="citeq">“${esc(a.quote)}”</q>` : ""}
+        <p class="cite"><span data-heading>${a.section ? `${esc(a.section)} · ` : ""}</span>${pdfLink(p, a.cite, a.quote, a.section) || esc(C.pageLabel(a.cite))}</p>
         <div class="meta">Answered in ${ms(t0)} ms · from the verified fact table</div>`);
+      fillHeadings(fe);
+      return fe;
     }
   }
   if (intent?.kind === "hard" && !C.isUpload(p)) {
@@ -563,7 +599,7 @@ function answer(p, text) {
     if (h?.notWritten) return askRag(p, text);
     if (h) {
       return add("bot", `${stopNote}<span class="badge b-ok">Exact policy line</span>
-        <div class="cardc"><div class="hd"><span><b>${esc(h.section || "Clause")}</b></span>${pdfLink(p, h.cite)}</div>
+        <div class="cardc"><div class="hd"><span><b>${esc(h.section || "Clause")}</b></span>${pdfLink(p, h.cite, h.quote, h.section)}</div>
         ${h.quote ? `<q>“${esc(h.quote)}”</q>` : `<p><b>This sits in a table on that page.</b> Open the page and read it with the customer.</p>`}</div>
         <p class="plain"><b>In simple words:</b> ${esc(h.plain)}</p>
         ${h.note ? `<p class="small">${esc(h.note)}</p>` : ""}
@@ -621,7 +657,7 @@ function renderCards(cites, policyId, id) {
   return `<div class="cards">` + cites.map((c) => `
     <div class="cardc" id="c${id}-${c.n}">
       <div class="hd"><span>[${c.n}] <b>${esc(c.section)}</b></span>
-        <a href="/pdf/${esc(c.policy_id || policyId)}#page=${c.page}" target="_blank">Page ${esc(c.printed_page)} &#8599;</a></div>
+        <a class="citelink" href="${esc(citeHref(c.policy_id || policyId, c.page, c.quote, c.section, c.product || ""))}" target="_blank" rel="noopener" title="Open PDF page ${esc(c.page)} with this line highlighted">PDF page ${esc(c.page)} &#8599;</a></div>
       <q>${esc(c.quote)}</q>
       ${c.text && c.text !== c.quote ? `<details><summary>Full clause</summary><div class="full">${esc(c.text)}</div></details>` : ""}
     </div>`).join("") + `</div>`;
@@ -651,9 +687,9 @@ function closeKitMsg(p) {
       <div class="kit__row"><button type="button" class="btn btn--sm" data-act="copy" data-src="wa${id}">Copy</button>
       <a class="btn btn--sm btn--ghost" href="https://wa.me/?text=${encodeURIComponent(k.whatsapp)}" target="_blank" rel="noopener">WhatsApp</a></div></div>
     <div class="kit"><p class="kit__t">${esc(L.wait)}</p>${k.waitEnd
-      ? `<p><b>${esc(k.waitEnd.date)}</b> — ${k.waitEnd.months} months. <span class="cite">${esc(k.waitEnd.cite)}</span></p>`
+      ? `<p><b>${esc(k.waitEnd.date)}</b> — ${k.waitEnd.months} months. ${citeA(p, pageNo(k.waitEnd.cite), k.waitEnd.quote, k.waitEnd.section, k.waitEnd.cite)}</p>`
       : `<p>${lang === "en" ? "Not written in this product." : "Is product mein nahi likha."}</p>`}</div>
-    ${kitLists(k, L, lang)}`);
+    ${kitLists(k, L, lang, p)}`);
   el.dataset.kit = kitKey;
   /* money: the chart figure replaces "premium comes later" in Say this, and is added to the WhatsApp text */
   moneyLine(p, S.need, lang).then((line) => {
@@ -673,8 +709,8 @@ function closeKitMsg(p) {
 }
 
 /* sale papers and claim papers stay separate; each line cites its wording page */
-function kitLists(k, L, lang) {
-  const li = (d) => `<li${d.quote ? ` title="${esc(d.quote)}"` : ""}>${esc(d.text)}${d.cite ? ` <span class="cite">${esc(d.cite)}</span>` : ""}</li>`;
+function kitLists(k, L, lang, p) {
+  const li = (d) => `<li${d.quote ? ` title="${esc(d.quote)}"` : ""}>${esc(d.text)}${d.cite ? ` ${p ? citeA(p, pageNo(d.cite), d.quote, d.section, d.cite) : `<span class="cite">${esc(d.cite)}</span>`}` : ""}</li>`;
   const noneBuy = lang === "en" ? "This wording does not list sale papers — ask the insurer." : lang === "hi" ? "इस वर्डिंग में खरीद के कागज़ नहीं लिखे — इंश्योरर से पूछें।" : "Is wording mein buy papers likhe nahi — insurer se poochho.";
   const noneClaim = lang === "en" ? "This wording does not list claim papers — ask the insurer." : lang === "hi" ? "इस वर्डिंग में क्लेम के कागज़ नहीं लिखे — इंश्योरर से पूछें।" : "Is wording mein claim papers likhe nahi — insurer se poochho.";
   const buy = `<div class="kit"><p class="kit__t">${esc(L.papers)}</p>${k.papers.length ? `<ul>${k.papers.map(li).join("")}</ul>` : `<p class="small">${esc(noneBuy)}</p>`}</div>`;

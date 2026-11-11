@@ -283,16 +283,147 @@ def compare(q: str):
     return compare_answer(q, detect_lang(q))
 
 
-@app.get("/pdf/{policy_id}")
-def pdf(policy_id: str):
+def _pdf_file(policy_id: str):
     from upload_index import pdf_path_for
     up = pdf_path_for(policy_id)
     if up is not None:
-        return FileResponse(up, media_type="application/pdf", filename=up.name)
+        return up
     for r in csv.DictReader(open(MANIFEST, encoding="utf-8")):
         if r["policy_id"] == policy_id:
-            return FileResponse(POLICY_DIR / r["file"], media_type="application/pdf")
+            return POLICY_DIR / r["file"]
     raise HTTPException(404)
+
+
+@app.get("/pdf/{policy_id}")
+def pdf(policy_id: str):
+    f = _pdf_file(policy_id)
+    return FileResponse(f, media_type="application/pdf", filename=f.name)
+
+
+# ---------- citation viewer: the cited PDF page with the exact quoted line highlighted ----------
+
+def _quote_hits(page, quote: str):
+    """Rectangles on the page that hold the quote. Quotes can be cut or interleaved (two-column pages), so the
+    quote is searched in overlapping 6-word pieces; every piece found on the page is highlighted."""
+    import re as _re
+    words = _re.findall(r"[\w’'/%.,()-]+", (quote or "").replace("…", " ").replace("...", " "))
+    words = [w.strip(".,") for w in words if w.strip(".,")]
+    if not words:
+        return []
+    # 1. the whole quote as one phrase (PyMuPDF matches across line breaks)
+    whole = page.search_for(" ".join(words), quads=False)
+    if whole:
+        return whole
+    # 2. pieces, kept only inside ONE passage: anchored on the first piece found, limited to the quote's length,
+    #    so a similar sentence in the next clause is never highlighted
+    pieces = []
+    for n in (6, 4):
+        for i in range(0, max(1, len(words) - n + 1), 2 if n == 6 else 1):
+            piece = " ".join(words[i:i + n])
+            if len(piece) >= 12:
+                pieces.append((i, piece))
+    found = []
+    for i, piece in pieces:
+        for r in page.search_for(piece):
+            found.append((i, r))
+    if not found:
+        return []
+    found.sort(key=lambda t: (t[0], t[1].y0))
+    anchor = found[0][1]
+    span = 16 * (len(" ".join(words)) / 55 + 2)          # about one text line per 55 characters, plus slack
+    hits = []
+    for _, r in found:
+        if anchor.y0 - 3 <= r.y0 <= anchor.y0 + span and \
+           not any(abs(r.y0 - h.y0) < 1 and abs(r.x0 - h.x0) < 1 for h in hits):
+            hits.append(r)
+    return hits
+
+
+def _clause_heading(page, y: float) -> str | None:
+    """The numbered clause heading nearest above the highlight, e.g. '3.1.1.1 Pre-Existing Disease- Excl 01'."""
+    import re as _re
+    best = None
+    for b in page.get_text("dict")["blocks"]:
+        for line in b.get("lines", []):
+            t = " ".join(s["text"] for s in line["spans"]).strip()
+            y0 = line["bbox"][1]
+            if y0 <= y + 1 and _re.match(r"^(\d+(\.\d+)+|[IVX]+\.|[A-Z]\.)\s+\S", t) and len(t) < 120:
+                if best is None or y0 > best[0]:
+                    best = (y0, t)
+    return best[1] if best else None
+
+
+def _cite_render(policy_id: str, page_no: int, quote: str):
+    import fitz
+    doc = fitz.open(_pdf_file(policy_id))
+    try:
+        if not 1 <= page_no <= doc.page_count:
+            raise HTTPException(404, "page out of range")
+        page = doc[page_no - 1]
+        hits = _quote_hits(page, quote)
+        for r in hits:
+            a = page.add_highlight_annot(r)
+            a.set_colors(stroke=(1, 0.86, 0.2)); a.update()
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), annots=True)
+        first = min((r.y0 for r in hits), default=None)
+        heading = _clause_heading(page, first) if first is not None else None
+        return pix.tobytes("png"), len(hits), (first / page.rect.height if first is not None else None), heading
+    finally:
+        doc.close()
+
+
+@app.get("/api/cite-heading")
+def cite_heading(policy_id: str, page: int, q: str = ""):
+    """The numbered clause heading above the quoted line on that page, and whether the line was found."""
+    import fitz
+    doc = fitz.open(_pdf_file(policy_id))
+    try:
+        if not 1 <= page <= doc.page_count:
+            return {"found": False, "heading": None}
+        pg = doc[page - 1]
+        hits = _quote_hits(pg, q)
+        y = min((r.y0 for r in hits), default=None)
+        return {"found": bool(hits), "heading": _clause_heading(pg, y) if y is not None else None}
+    finally:
+        doc.close()
+
+
+@app.get("/cite/{policy_id}/page.png")
+def cite_png(policy_id: str, page: int, q: str = ""):
+    from fastapi.responses import Response
+    png = _cite_render(policy_id, page, q)[0]
+    return Response(png, media_type="image/png", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/cite/{policy_id}")
+def cite(policy_id: str, page: int, q: str = "", s: str = "", product: str = ""):
+    """A page an agent can open from any citation: product, rule, PDF page, the exact line, and the real PDF
+    page with that line highlighted. Links to the full PDF at the same page."""
+    from html import escape as h
+    from urllib.parse import quote as uq
+    from fastapi.responses import HTMLResponse
+    _, n, top, heading = _cite_render(policy_id, page, q)
+    s = heading or s   # the numbered clause heading read from the page beats a coarse section label
+    img = f"/cite/{uq(policy_id)}/page.png?page={page}&q={uq(q)}&v=2"
+    found = (f"The quoted line is highlighted in yellow on PDF page {page}." if n
+             else f"The exact words could not be matched on the page image (the PDF text layer may be split); "
+                  f"read the quote above against PDF page {page}.")
+    mark = f'<div id="hit" style="position:absolute;left:0;top:{top * 100:.2f}%"></div>' if top is not None else ""
+    return HTMLResponse(f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>PDF page {page} · {h(product or policy_id)}</title>
+<style>:root{{--bg:#f4f6f9;--ink:#13202b;--mut:#5a6b7b;--line:#d9e0e7;--acc:#0b4f9c}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#0f1720;--ink:#e6edf3;--mut:#9fb0c0;--line:#2a3a4a;--acc:#6fb1ff}}}}
+body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,Segoe UI,sans-serif}}
+header{{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);padding:12px 16px;z-index:2}}
+h1{{font-size:16px;margin:0 0 4px}} .m{{color:var(--mut);font-size:13px}} a{{color:var(--acc)}}
+blockquote{{margin:8px 0 0;padding:8px 12px;border-left:4px solid #f5c518;background:rgba(245,197,24,.12)}}
+.pg{{position:relative;max-width:900px;margin:16px auto;padding:0 16px}} .pg img{{width:100%;border:1px solid var(--line);background:#fff}}</style></head>
+<body><header><h1>{h(product or policy_id)} — PDF page {page}{(' · ' + h(s)) if s else ''}</h1>
+<div class="m">{h(found)} <a href="/pdf/{uq(policy_id)}#page={page}" target="_blank" rel="noopener">Open the full PDF at page {page} ↗</a></div>
+{f'<blockquote>“{h(q)}”</blockquote>' if q else ''}</header>
+<div class="pg">{mark}<img src="{img}" alt="PDF page {page} with the quoted line highlighted"></div>
+<script>addEventListener('load',()=>{{const m=document.getElementById('hit');if(m)window.scrollTo(0,m.getBoundingClientRect().top+scrollY-document.querySelector('header').offsetHeight-60)}})</script>
+</body></html>""")
 
 
 app.mount("/", StaticFiles(directory=ROOT / "web", html=True), name="web")
