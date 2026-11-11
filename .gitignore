@@ -26,6 +26,7 @@ data/chroma/
 data/audit.jsonl
 data/answer_cache.json
 data/answer_cache.tmp
+data/wording_facts.json
 data/pages_fitz_backup/
 data/uploads/
 eval/reports/

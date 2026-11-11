@@ -69,6 +69,7 @@ def _warm():
             gen._load()
             for _ in gen.stream("Reply with OK.", "OK?"):
                 break
+        _wording_payload()  # read every wording's facts once (cached on disk by index fingerprint)
         STATE["ready"] = True
     except Exception as e:  # surface in /api/status rather than crash
         STATE["error"] = repr(e)
@@ -221,6 +222,51 @@ def ask(req: Ask):
             yield sse(ev)
 
     return StreamingResponse(events(), media_type="text/event-stream", headers=headers)
+
+
+_KITS: dict = {}
+
+
+def _wording_payload() -> dict:
+    """Per product: the facts read from its wording (wording.py) and its close kit (papers from the wording).
+    The chat uses these in place of the catalogue's fact table."""
+    import sys as _sys
+    from products import registry
+    from wording import all_facts, text_pages
+    _sys.path.insert(0, str(ROOT / "ingest"))
+    from build_kit import kit_for
+    reg = registry()
+    facts = all_facts([p["policy_id"] for p in reg])
+    out = {}
+    for p in reg:
+        w = facts.get(p["policy_id"], {})
+        if p["policy_id"] not in _KITS:
+            pages = text_pages(p["policy_id"])
+            _KITS[p["policy_id"]] = kit_for(pages, w.get("page_offset")) if pages else {}
+        out[p["id"]] = {"facts": w.get("facts", {}), "close_kit": _KITS[p["policy_id"]],
+                        "uin_from_wording": (w.get("uin") or {}).get("value")}
+    return out
+
+
+@app.get("/api/wording-facts")
+def wording_facts():
+    if not STATE["ready"]:
+        raise HTTPException(503, "Models still warming up.")
+    return WORKER.submit(_wording_payload).result()
+
+
+class Need(BaseModel):
+    text: str
+    mine: list[str] = []
+
+
+@app.post("/api/recommend")
+def recommend(req: Need):
+    """Need-first ranking from the wording (rank.py): parse the need, then rank on it."""
+    if not req.text.strip():
+        raise HTTPException(400, "empty need")
+    from rank import recommend as _rec
+    return WORKER.submit(_rec, req.text.strip(), req.mine).result()
 
 
 @app.get("/api/compare")

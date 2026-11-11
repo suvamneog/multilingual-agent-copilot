@@ -25,7 +25,9 @@
     if (f.pdf_page != null) return { n: f.pdf_page, pdf: f.pdf_page, kind: "pdf" };
     return null;
   }
-  const pageLabel = (c) => (!c ? "page not recorded" : c.kind === "printed" ? `Page ${c.n}` : `PDF page ${c.n}`);
+  /* always the PDF page (what the link opens); the printed page only when it differs */
+  const pageLabel = (c) => (!c ? "page not recorded"
+    : c.kind === "printed" && c.n !== c.pdf ? `PDF page ${c.pdf} (printed page ${c.n})` : `PDF page ${c.pdf ?? c.n}`);
 
   function waitEndDate(months, from = new Date()) {
     const d = new Date(from);
@@ -65,6 +67,26 @@
   const LOW_COST = ["sasta", "sasti", "saste", "cheap", "cheaper", "affordable", "low premium", "kam premium", "pese kam", "paise kam",
     "kam pese", "kam paise", "kam lage", "kam kharcha", "budget friendly", "पैसे कम", "सस्ता"];
 
+  const HEALTHY = /\bno (?:disease|illness|medical (?:history|condition)|health (?:issue|problem)s?)\b|\bhealthy\b|koi bimari nahi|bimari nahi|कोई बीमारी नहीं|स्वस्थ/;
+  const MATERNITY_RE = /\bbaby\b|pregnan|maternity|\bdelivery\b|garbh|bachcha|bachha|बच्चा|गर्भ|प्रसव|मातृत्व/;
+  const SURGERY_RE = /(knee|hip|joint)\s*replacement|surgery in|operation in|surgery (?:next|after)/;
+  const NEG_B = /(?:\bno|\bnot|\bwithout|\bnever|\bna|\bnahi|\bnahin|\bkoi|नहीं)\s*(?:\S+\s*){0,2}$/;
+  const NEG_A = /^\s*(?:\S+\s*){0,2}?(?:nahi|nahin|nhi|नहीं)/;
+  function positions(text, list) {
+    const out = [];
+    for (const w of list) {
+      const rx = /^[a-z0-9 .+-]+$/.test(w) ? new RegExp(`\\b${w.replace(/[.+]/g, "\\$&")}\\b`, "g") : new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
+      let m;
+      while ((m = rx.exec(text))) out.push({ index: m.index, end: m.index + m[0].length });
+    }
+    return out;
+  }
+  function negated(text, m) {
+    const before = text.slice(Math.max(0, m.index - 24), m.index);
+    const after = text.slice(m.end, m.end + 30);
+    return NEG_B.test(before) || (NEG_A.test(after) && !/^\s*(ki|ka|ke)\b/.test(after));
+  }
+
   function parseMoney(text) {
     const out = [];
     const re = /(\d[\d,]*\.?\d*)\s*(lakh|lakhs|lac|l|k|thousand|hazaar|hazar)?\b/gi;
@@ -87,13 +109,23 @@
       pedMaxMonths: null, lowCost: false, text,
     };
     for (const [rel, list] of Object.entries(RELATION)) if (has(t, list)) { need.relation = rel; break; }
-    for (const [cond, list] of Object.entries(CONDITION)) if (has(t, list)) need.conditions.push(cond);
+    /* negation is a filter, not a keyword: "no diabetes", "diabetes nahi hai", "no BP" mean absent */
+    need.absent = [];
+    for (const [cond, list] of Object.entries(CONDITION)) {
+      const at = positions(t, list);
+      if (!at.length) continue;
+      if (at.every((m) => negated(t, m))) need.absent.push(cond);
+      else need.conditions.push(cond);
+    }
+    need.healthy = !need.conditions.length && (need.absent.length > 0 || HEALTHY.test(t));
+    need.maternity = MATERNITY_RE.test(t) && !/\b(no|not|nahi)\s+(baby|pregnan)/.test(t);
+    need.surgery = SURGERY_RE.test(t);
     /* also "the premium is also low", "premium should be less", "budget is limited", "pese bhi kam lage" */
     need.lowCost = has(t, LOW_COST) ||
       /\b(premium|price|cost)\b[^.?!]{0,25}\b(low|less|lower|kam|cheap|affordable)\b|\bbudget\b[^.?!]{0,15}\b(limited|tight|low|kam)\b|\b(pese|paise|paisa)\b[^.?!]{0,12}\bkam\b/.test(t);
 
     const nums = parseMoney(t);
-    const ageCtx = /\b(age|umar|umr|saal|sal|years?|yrs?|yr|varsh|ki hai|ka hai|ke hai)\b|साल|वर्ष/;
+    const ageCtx = /\b(age|umar|umr|saal|sal|years?|yrs?|yr|varsh|ki hai|ka hai|ke hai|i am|i'm|is)\b|साल|वर्ष/;
     for (const n of nums) {
       if (!Number.isInteger(n.value) || n.value < 18 || n.value > 99) continue;
       const after = t.slice(n.end, n.end + 14);
@@ -132,6 +164,9 @@
     need.signals =
       (need.relation ? 1 : 0) + (need.age !== null ? 1 : 0) + (need.roomRentMin !== null ? 1 : 0) +
       (need.budgetMax !== null ? 1 : 0) + (need.pedMaxMonths !== null ? 1 : 0) + (need.lowCost ? 1 : 0) + (shopping ? 1 : 0);
+    /* maternity / surgery / healthy words describe a customer only when no product is picked,
+       or alongside a person or an age ("Is maternity covered?" on a picked product stays a question) */
+    need.storySignals = (need.maternity ? 1 : 0) + (need.surgery ? 1 : 0) + (need.healthy ? 1 : 0) + (need.absent.length ? 1 : 0);
     return need;
   }
 
@@ -139,6 +174,7 @@
      signal is a condition word inside a question about that product */
   function isNeed(need, productPinned) {
     if (need.signals > 0) return true;
+    if (need.storySignals > 0 && (!productPinned || need.relation || need.age !== null)) return true;
     return !productPinned && need.conditions.length > 0;
   }
 
@@ -651,10 +687,26 @@
           hi: "घुटने का दर्द पहले से है, इसलिए यह pre-existing है — इसकी वेटिंग इस वर्डिंग में नहीं लिखी; वादा करने से पहले कन्फ़र्म करें।",
           hinglish: "Ghutne ka dard pehle se hai, isliye yeh pre-existing hai — iski waiting wording mein nahi likhi; promise se pehle confirm karo." };
 
+    /* the 30-day initial wait from the wording: never "covered once the policy starts" without it */
+    const iw = p.facts?.initial_wait;
+    const iwPage = iw?.stated ? pageLabel(citePage(iw)) : null;
+    const newIll = {
+      en: iwPage ? `covers new illnesses for ${who} after the first 30 days (${iwPage}); accidents from day 1`
+        : `covers new illnesses for ${who}; the 30-day initial wait is not written in this wording, so confirm it before you promise`,
+      hi: iwPage ? `${who} की नई बीमारी पहले 30 दिन के बाद कवर करता है (${iwPage}); दुर्घटना पहले दिन से`
+        : `${who} की नई बीमारी कवर करता है; 30 दिन का शुरुआती वेट इस वर्डिंग में नहीं लिखा, वादा करने से पहले कन्फ़र्म करें`,
+      hinglish: iwPage ? `${who} ki nayi bimari pehle 30 din ke baad cover karta hai (${iwPage}); accident day 1 se`
+        : `${who} ki nayi bimari cover karta hai; 30 din ka initial wait wording mein nahi likha, promise se pehle confirm karo`,
+    }[L];
+    const waNew = {
+      en: iwPage ? "• New illnesses: covered after the first 30 days; accidents from day 1" : "• New illnesses: confirm the 30-day initial wait with the insurer",
+      hi: iwPage ? "• नई बीमारी: पहले 30 दिन के बाद कवर; दुर्घटना पहले दिन से" : "• नई बीमारी: 30 दिन का वेट इंश्योरर से कन्फ़र्म",
+      hinglish: iwPage ? "• Nayi bimari: pehle 30 din ke baad cover; accident day 1 se" : "• Nayi bimari: 30 din ka wait insurer se confirm",
+    }[L];
     let say, wa;
     if (L === "en") {
       say = [
-        `${fullName(p)} from ${p.insurer} covers new illnesses for ${who} once the policy starts.`,
+        `${fullName(p)} from ${p.insurer} ${newIll}.`,
         end ? `For ${condWord}, cover starts on ${end} — after ${ped.value} months of continuous cover.` : "The pre-existing wait is not written in this wording — confirm it before you decide.",
         kneeSay?.en,
         `Hospital room: ${roomLine}.`,
@@ -663,7 +715,7 @@
       wa = [
         "Namaste,",
         `Here is the plan for ${who}: ${p.insurer} ${fullName(p)} (UIN ${p.uin}).`,
-        "• New illnesses: covered once the policy starts",
+        waNew,
         end ? `• ${condWord[0].toUpperCase() + condWord.slice(1)}: covered from ${end}` : "• Pre-existing wait: confirming with the insurer",
         `• Room: ${roomLine}`,
         buyLine ? `To buy, the wording asks for: ${buyLine}.` : null,
@@ -671,7 +723,7 @@
       ].filter(Boolean).join("\n");
     } else if (L === "hi") {
       say = [
-        `${p.insurer} का ${fullName(p)} पॉलिसी शुरू होते ही ${who} की नई बीमारी कवर करता है।`,
+        `${p.insurer} का ${fullName(p)} ${newIll}।`,
         end ? `${condWord} के लिए कवर ${end} से शुरू — ${ped.value} महीने continuous cover के बाद।` : "PED वेटिंग इस वर्डिंग में नहीं लिखी — कन्फ़र्म करके बताएँ।",
         kneeSay?.hi,
         `रूम: ${roomLine}।`,
@@ -680,7 +732,7 @@
       wa = [
         "नमस्ते,",
         `${who} के लिए प्लान: ${p.insurer} ${fullName(p)} (UIN ${p.uin})।`,
-        "• नई बीमारी: पॉलिसी शुरू होते ही कवर",
+        waNew,
         end ? `• ${condWord}: ${end} से कवर` : "• PED वेट: इंश्योरर से कन्फ़र्म",
         `• रूम: ${roomLine}`,
         buyLine ? `खरीदने के लिए वर्डिंग में ये कागज़ माँगे गए हैं: ${buyLine}।` : null,
@@ -688,7 +740,7 @@
       ].filter(Boolean).join("\n");
     } else {
       say = [
-        `${p.insurer} ka ${fullName(p)} policy start hote hi ${who} ki nayi bimari cover karta hai.`,
+        `${p.insurer} ka ${fullName(p)} ${newIll}.`,
         end ? `${condWord} ke liye cover ${end} se start — ${ped.value} months continuous cover ke baad.` : "PED waiting is wording mein nahi likhi — confirm karke batao.",
         kneeSay?.hinglish,
         `Room: ${roomLine}.`,
@@ -697,7 +749,7 @@
       wa = [
         "Namaste,",
         `${who} ke liye plan: ${p.insurer} ${fullName(p)} (UIN ${p.uin}).`,
-        "• Nayi bimari: policy start hote hi cover",
+        waNew,
         end ? `• ${condWord}: ${end} se cover` : "• PED wait: insurer se confirm",
         `• Room: ${roomLine}`,
         buyLine ? `Kharidne ke liye wording mein yeh papers maange gaye hain: ${buyLine}.` : null,

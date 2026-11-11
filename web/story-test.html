@@ -24,7 +24,10 @@
 <button id="run">Run all</button> <label><input id="only" placeholder="filter by name" style="font:inherit;padding:5px"></label>
 <table><thead><tr><th>F</th><th>Case</th><th>Result</th></tr></thead><tbody id="out"></tbody></table>
 <iframe id="app" title="chat under test"></iframe>
-<script src="story-cases.js"></script>
+<script>
+/* ?cases=rag-cases.js picks the case file; story-cases.js by default */
+document.write(`<script src="${(new URLSearchParams(location.search).get("cases") || "story-cases.js").replace(/[^\w.-]/g, "")}?t=${Date.now()}"><\/script>`);
+</script>
 <script>
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const frame = document.getElementById("app");
@@ -34,8 +37,8 @@ async function load(mine) {
   try { localStorage.setItem(PROFILE_KEY, JSON.stringify(mine || [])); } catch {}
   await new Promise((r) => { frame.onload = r; frame.src = `simple.html?t=${Date.now()}`; });
   const w = frame.contentWindow;
-  for (let i = 0; i < 100; i++) {
-    try { if (w.eval("S.products.length") > 0) return w; } catch {}
+  for (let i = 0; i < 1200; i++) {  /* wait for the wording facts too (server reads every wording at start) */
+    try { if (w.eval("S.products.length") > 0 && w.eval("S.wordingReady !== false && (S.wordingReady || typeof loadWording !== 'function')")) return w; } catch {}
     await sleep(100);
   }
   throw new Error("chat page did not load the catalogue");
@@ -67,6 +70,7 @@ async function runCase(c, dates) {
   const w = await load(c.mine);
   const doc = w.document, chat = doc.querySelector("#chat");
   const fails = [];
+  const texts = [];
   for (const [i, st] of c.steps.entries()) {
     const from = chat.children.length;
     if (st.say) {
@@ -88,8 +92,18 @@ async function runCase(c, dates) {
       if (!rx.test(text)) fails.push(`step ${i + 1} (${st.say || st.click}): missing ${rx}`);
     }
     for (const n of st.not || []) if (n.test(text)) fails.push(`step ${i + 1}: should not show ${n}`);
+    if (st.count) {
+      const n = doc.querySelectorAll(st.count[0]).length;
+      if (n !== st.count[1]) fails.push(`step ${i + 1}: ${n} × ${st.count[0]}, expected ${st.count[1]}`);
+    }
+    texts.push(text);
     if (fails.length) { fails.push(`— got: ${text.slice(0, 600)}`); break; }
   }
+  if (c.same && texts.length >= 2) {
+    const watch = (t) => (t.match(/(?:Also check|Yeh bhi check karo)[^\n]*/) || [""])[0] + "|" + (t.match(/(?:Best|Option 1)[^\n]*/) || [""])[0];
+    if (watch(texts[0]) !== watch(texts[1])) fails.push(`not stable between turns:\n  1: ${watch(texts[0])}\n  2: ${watch(texts[1])}`);
+  }
+  c._texts = texts;
   return fails;
 }
 
@@ -107,7 +121,7 @@ async function runAll() {
     out.appendChild(tr);
     let fails;
     try { fails = await runCase(c, dates); } catch (e) { fails = [String(e)]; }
-    results.push({ f: c.f, name: c.name, ok: !fails.length, fails });
+    results.push({ f: c.f, name: c.name, ok: !fails.length, fails, texts: c._texts || [] });
     tr.lastChild.innerHTML = fails.length ? `<span class="bad">FAIL</span><div class="why"></div>` : `<span class="ok">pass</span>`;
     if (fails.length) tr.lastChild.querySelector(".why").textContent = fails.join("\n");
   }

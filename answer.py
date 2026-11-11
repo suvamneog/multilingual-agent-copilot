@@ -437,6 +437,14 @@ def _ask_stream(question: str, policy_id: str, gen: Generator) -> Iterator[dict]
                "ms": int((time.time() - t0) * 1000)}
         return
 
+    # a topic the wording never mentions ("robotic" in Optima Secure V08) is "not written" — no model needed
+    absent = topic_absent(question, policy_id)
+    if absent:
+        yield {"type": "final", "status": "not_stated", "answer": NOT_STATED[lang], "citations": [], "lang": lang,
+               "backend": "wording_index", "rule": "topic_absent", "absent": absent,
+               "ms": int((time.time() - t0) * 1000)}
+        return
+
     clauses = _retrieve(question, policy_id)
     top = max((c["score"] for c in clauses), default=0)
     t_ret = int((time.time() - t0) * 1000)
@@ -459,6 +467,16 @@ def _ask_stream(question: str, policy_id: str, gen: Generator) -> Iterator[dict]
         cards = [card(pool[i - 1], i, ans, question) for i in sorted({e, a})]
         yield {"type": "final", "status": "answered", "answer": ans, "citations": cards, "lang": lang,
                "backend": gen.name, "top_score": top, "rule": "addon_vs_exclusion", "ms": int((time.time() - t0) * 1000)}
+        return
+
+    wl = waitlist_case(question, clauses, policy_id)
+    if wl:
+        topic, n, c = wl
+        ans = WAITLIST_ANS[lang].format(topic=topic[:1].upper() + topic[1:], n=n, i=1)
+        c = {**c, "policy_id": c.get("policy_id") or policy_id, "product": c.get("product", "")}
+        yield {"type": "final", "status": "answered", "answer": ans, "citations": [card(c, 1, ans, question)],
+               "lang": lang, "backend": gen.name, "top_score": top, "rule": "waiting_list",
+               "ms": int((time.time() - t0) * 1000)}
         return
 
     product = clauses[0].get("product", "")
@@ -505,24 +523,184 @@ def _ask_stream(question: str, policy_id: str, gen: Generator) -> Iterator[dict]
     if not cited:  # model forgot to cite: attach the clauses that best overlap the answer
         ranked = sorted(range(len(clauses)), key=lambda i: -len(_tokens(clauses[i]["text"]) & _tokens(answer)))
         cited = [i + 1 for i in ranked[:2]]
-    src = lambda i: clauses[i - 1]["text"] + " " + clauses[i - 1]["section"]
-    missing = check_numbers(answer, [src(i) for i in cited])
-    if missing:  # citation repair: the figure may be right but cited against the wrong clause
-        for n in list(missing):
-            holder = next((i for i in range(1, len(clauses) + 1) if n in _numbers(src(i))), None)
-            if holder and holder not in cited and len(cited) < 5:
-                cited.append(holder)
-        cited.sort()
-        missing = check_numbers(answer, [src(i) for i in cited])
-    if missing:
-        ans, cards = _extractive(question, lang, clauses, note=BLOCKED_NOTE[lang])
-        yield {"type": "final", "status": "blocked", "answer": ans, "draft": answer, "unsupported_numbers": missing,
-               "citations": cards, **common}
+
+    # verification: the cited clauses must be about the question, and every figure must sit in them
+    v = verify(answer, cited, clauses, question, policy_id)
+    if v["status"] == "not_stated":
+        yield {"type": "final", "status": "not_stated", "answer": NOT_STATED[lang], "citations": [],
+               "verify": v, **common}
         return
+    answer, cited = v["answer"], v["cited"]
 
     answer, cited = addon_guard(answer, cited, clauses, lang)
     cards = [card(clauses[i - 1], i, answer, question) for i in cited]
     yield {"type": "final", "status": "answered", "answer": answer, "citations": cards, **common}
+
+
+# ---------- verification after generation ----------
+
+REL_STOP = {"covered", "cover", "coverage", "covers", "policy", "insurance", "health", "there", "which", "what", "about",
+            "under", "does", "milega", "milta", "milti", "kitna", "kitni", "kitne", "hoga", "hogi", "plan", "treatment",
+            "expenses", "expense", "included", "charges", "amount", "limit", "this", "that", "with", "from", "have",
+            "will", "would", "can", "could", "should", "covered?", "kya", "hai", "hain", "mein", "ka", "ki", "ke",
+            "liye", "agar", "toh", "aur", "the", "and", "for", "any", "are", "how", "much", "many", "when", "where",
+            "surgery", "surgeries", "operation", "procedure", "claim", "pay", "paid", "payable", "get", "my", "me",
+            "mother", "father", "wife", "husband", "customer", "is", "it", "in", "of", "on", "a", "an", "to", "be",
+            "need", "needs", "want", "wants", "please", "tell", "batao", "bataiye", "policy?"}
+DAY1_ANS = re.compile(r"\bday\s*(?:1|one)\b|\bfirst day\b|from the (?:very )?start|from inception|immediately|"
+                      r"without any waiting|no waiting period|pehle din|पहले दिन", re.I)
+DAY1_SRC = re.compile(r"\bday\s*(?:1|one)\b|first day|from (?:the )?inception|from the first|without any waiting|"
+                      r"no waiting period|waiting period shall not apply|from the commencement", re.I)
+
+
+def relevance_words(question: str) -> list[str]:
+    ql = question.lower()
+    out = [TOPIC_ALIAS[k] for k in TOPIC_ALIAS if k in ql]
+    out += [w for w in re.findall(r"[a-z]{4,}", ql) if w not in REL_STOP and w not in TOPIC_ALIAS]
+    out += [w.lower() for w in re.findall(r"\b[A-Z]{3,5}\b", question)]
+    return list(dict.fromkeys(out))
+
+
+def _stem(w: str) -> str:
+    return w[:-1] if len(w) > 5 and w.endswith("s") else w
+
+
+PED_SENT = re.compile(r"pre-?\s?existing|\bPED\b", re.I)
+WAIT_SENT = re.compile(r"(?:specified|specific|listed)[^.]{0,40}(?:disease|illness|condition|procedure)|waiting list", re.I)
+
+
+def _wording_waits(policy_id: str | None) -> dict:
+    """The PED and listed-illness waits read from this product's wording (wording.py), with plan variants."""
+    if not policy_id:
+        return {}
+    try:
+        from wording import all_facts
+        f = all_facts([policy_id]).get(policy_id, {}).get("facts", {})
+    except Exception:
+        return {}
+    out = {}
+    for k, key in (("ped", "ped_wait_months"), ("spec", "specified_disease_wait_months")):
+        g = f.get(key, {})
+        if g.get("stated"):
+            vals = {int(g["value"])} | {int(x) for x in re.findall(r"(\d{1,2}) months", g.get("note") or "")}
+            out[k] = vals
+    return out
+
+
+def verify(answer: str, cited: list[int], clauses: list[dict], question: str, policy_id: str | None = None) -> dict:
+    """Drop what the cited clauses do not support; refuse when the clauses are not about the question.
+
+    1. relevance: at least one topic word of the question appears in a cited clause (else not stated;
+       e.g. a heart-surgery question must not be answered from Home Care or piles/hernia clauses)
+    2. figures: each sentence's numbers (amounts, waits, dates, pages) must be in the clauses it cites
+    3. "covered from day 1" needs a clause that says so
+    """
+    src = lambda i: clauses[i - 1]["text"] + " " + (clauses[i - 1].get("section") or "")
+    words = relevance_words(question)
+    if words:
+        body = " ".join(src(i) for i in cited).lower()
+        if not any(_stem(w) in body for w in words):
+            return {"status": "not_stated", "reason": f"cited clauses do not mention: {', '.join(words)}"}
+    waits = _wording_waits(policy_id)
+    kept, dropped = [], []
+    for s in re.split(r"(?<=[.!?।])\s+", answer.strip()):
+        if not s.strip():
+            continue
+        refs = [int(n) for n in re.findall(r"\[(\d+)\]", s) if 0 < int(n) <= len(clauses)] or cited
+        pool = " ".join(src(i) for i in refs)
+        bad = sorted(n for n in _numbers(re.sub(r"\[\d+\]", " ", s)) if n not in _numbers(pool))
+        if bad:  # citation repair: only to a clause that holds the figure AND is about the question's topic
+            holder = [i for i in range(1, len(clauses) + 1) if all(n in _numbers(src(i)) for n in bad)
+                      and (not words or any(_stem(w) in src(i).lower() for w in words))]
+            if holder:
+                cited = sorted(set(cited) | {holder[0]})
+                bad = []
+        # a wait stated as the PED / listed-illness wait must be the one this product's wording states
+        months = {int(x) for x in re.findall(r"(\d{1,2})\s*(?:\(\s*\w+\s*\)\s*)?months", s)}
+        if months and PED_SENT.search(s) and waits.get("ped") and not months & waits["ped"]:
+            bad.append("PED wait " + "/".join(map(str, sorted(months))))
+        elif months and WAIT_SENT.search(s) and waits.get("spec") and not months & waits["spec"]:
+            bad.append("listed-illness wait " + "/".join(map(str, sorted(months))))
+        if bad or (DAY1_ANS.search(s) and not DAY1_SRC.search(pool)):
+            dropped.append(s)
+            continue
+        kept.append(s)
+    if not kept:
+        return {"status": "not_stated", "reason": "no sentence survived the figure check", "dropped": dropped}
+    out = re.sub(r"^(?:However|But|Also|Lekin|Par|लेकिन),?\s+(\w)", lambda m: m.group(1).upper(), " ".join(kept))
+    return {"status": "answered", "answer": out, "cited": cited, "dropped": dropped}
+
+
+WAITLIST_ANS = {
+    "en": "{topic} is not a permanent exclusion: it is in the listed-illness waiting list, so it is covered after {n} months of continuous cover [{i}].",
+    "hi": "{topic} स्थायी exclusion नहीं है: यह waiting list में है, इसलिए {n} महीने की लगातार कवरेज के बाद कवर है [{i}]।",
+    "hinglish": "{topic} permanent exclusion nahi hai: yeh waiting list mein hai, isliye {n} months continuous cover ke baad cover hai [{i}].",
+}
+WAITLIST_RE = re.compile(r"listed conditions|specified disease|specific waiting|named ailment|Excl\s*0?2\b|"
+                         r"waiting period[^.]{0,80}?\d+\s*months", re.I)
+
+
+def topic_absent(question: str, policy_id: str) -> list[str] | None:
+    """The question's topic words when none of them appears anywhere in this product's indexed wording."""
+    words = [w for w in relevance_words(question) if len(w) >= 4]
+    if not words or not policy_id:
+        return None
+    from retrieve import _load
+    col = _load()[1]
+    for w in words:
+        for form in {w, w.capitalize(), w.upper(), _stem(w)}:
+            if col.get(where={"policy_id": policy_id}, where_document={"$contains": form}, limit=1)["ids"]:
+                return None
+    return words
+
+
+WAIT_FACT_TOPIC = [  # topic in the question -> the wording fact (wording.py) that already read its waiting list
+    (re.compile(r"(?:knee|hip|joint)\s*replacement|replacement of (?:the )?(?:knee|hip|joint)|ghutne ka operation", re.I),
+     "joint_replacement", "Joint replacement"),
+]
+
+
+def waitlist_case(question: str, clauses: list[dict], policy_id: str | None = None) -> tuple[str, int, dict] | None:
+    """A coverage question whose topic sits in a waiting list (e.g. joint replacement, 24 months), not in a
+    permanent exclusion. Small models read the "Waiting period and exclusions" chapter as "not covered".
+    Looks at the retrieved clauses, the product's wording facts, then a keyword search of its clauses
+    (with the page before, where a list's heading often sits). Returns (topic, months, clause)."""
+    if not COVER_Q.search(question):
+        return None
+    from retrieve import is_exclusion_for
+    if policy_id:
+        from wording import all_facts
+        f = all_facts([policy_id]).get(policy_id, {}).get("facts", {})
+        for rx, field, name in WAIT_FACT_TOPIC:
+            g = f.get(field, {})
+            if rx.search(question) and g.get("stated") and g.get("months"):
+                c = {"text": g["quote"], "page": g["pdf_page"], "printed_page": g.get("printed_page"),
+                     "section": g.get("section") or "Waiting list", "policy_id": policy_id, "product": ""}
+                return name, g["months"], c
+    cands = list(clauses)
+    if policy_id:
+        from retrieve import _load
+        col = _load()[1]
+        for t in relevance_words(question)[:3]:
+            for form in {t, t.capitalize()}:
+                res = col.get(where={"policy_id": policy_id}, where_document={"$contains": form}, limit=6,
+                              include=["documents", "metadatas"])
+                for doc, m in zip(res["documents"], res["metadatas"]):
+                    prev = col.get(where={"$and": [{"policy_id": policy_id}, {"page": m["page"] - 1}]}, include=["documents"])
+                    cands.append({"text": doc, "before": " ".join(prev["documents"]), "id": None, **m})
+    for t in relevance_words(question):
+        for c in cands:
+            txt = c["text"]
+            pos = txt.lower().find(t)
+            if pos < 0:
+                continue
+            before = (c.get("before") or "")[-2500:] + " " + txt[max(0, pos - 2500):pos]
+            if not WAITLIST_RE.search(before) or is_exclusion_for(txt, c, t):
+                continue
+            ms = [int(x) for x in re.findall(r"(\d{2})\s*months", before[-1600:]) if 6 <= int(x) <= 48]
+            if ms:
+                return t, ms[-1], c
+    return None
 
 
 ADDON_WORDS = re.compile(r"add[- ]?on|optional|ऐड[- ]?ऑन|वैकल्पिक", re.I)

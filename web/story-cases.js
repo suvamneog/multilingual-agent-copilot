@@ -10,8 +10,14 @@
 
    Every sentence that once failed stays here so it cannot break again. */
 
-const BEST_EN = /Best: HDFC ERGO Optima Secure V08/;
-const BEST_HL = /Sabse behtar: HDFC ERGO Optima Secure V08/;
+/* ranking now comes from the wordings (rank.py, production-RAG branch). For a 55-year-old with diabetes the
+   wordings put Generali Central Health Absolute first (PED 24 months, clause 3.1.1.1 PDF page 23; entry age
+   "Adult – No limit", PDF page 50) and Optima Secure V08 second (36 months, PDF page 30). A low-budget need
+   is shown as "Option 1 / 2", never "Best". */
+const BEST_EN = /(?:Best|Option 1): Generali Central Health Absolute/;
+const BEST_HL = /(?:Sabse behtar|Option 1): Generali Central Health Absolute/;
+const SECOND_EN = /(?:Second|Option 2): HDFC ERGO Optima Secure V08/;
+const SECOND_HL = /(?:Doosra|Option 2): HDFC ERGO Optima Secure V08/;
 const ONLY_TWO = /\bThird\b|Teesra|तीसरा/;
 const MONEY_EN = /Money was not compared/;
 const MONEY_HL = /Paisa compare nahi kiya/;
@@ -24,13 +30,13 @@ window.STORY_CASES = [
   /* ── the story, exactly as written ───────────────────────── */
   { f: 3, name: "Story (English): best + second, date, money line, knee",
     steps: [{ say: "My mother is 55 years old. She has diabetes. She has severe pain in her knees. We tried insurance before, but in all of them the waiting period for a pre-existing disease was more than 3 years. Is there a health insurance plan where I can put my mother, and the premium is also low?",
-      expect: [BEST_EN, /Second: Liberty General HealthPrime Connect/, "{D36}", MONEY_EN, /Shortest wait among plans where entry age is confirmed/, /Knee/, /not ranked/i, /Why not the others/i], not: [ONLY_TWO] }] },
+      expect: [BEST_EN, SECOND_EN, "{D24}", MONEY_EN, /Shortest wait among plans where entry age is confirmed/, /Knee/, /Why not the others/i], not: [ONLY_TWO, /Best:/] }] },
   { f: 3, name: "Story (Hinglish): best + second, date, money line",
     steps: [{ say: "meri ma 55 years ki hai. unhe diabetes hai. unke ghutne meh bohot jyada dard rehta hai. humne pehle insurance pehle kuch try kiya tha. but unme pre existing disease ka jo waiting period hota hai, woh 3 saal se jyada ka hota hai. esa kuch hai kya jisse mummy ko hum ek health insurance plan meh dal sake. Esa koi health insurance plan hai kya, jaha peh mummy ko dal sake aur pese bhi kam lage.",
-      expect: [BEST_HL, /Doosra: Liberty General HealthPrime Connect/, "{D36}", MONEY_HL, /Ghutne/, /Baaki kyun nahi/i], not: [ONLY_TWO] }] },
+      expect: [BEST_HL, SECOND_HL, "{D24}", MONEY_HL, /Ghutne/, /Baaki kyun nahi/i], not: [ONLY_TWO, /Sabse behtar:/] }] },
   { f: 3, name: "Spec case: mother 50, diabetes, room rent above 10,000",
     steps: [{ say: "Mother is 50, has diabetes, wants room rent above 10,000",
-      expect: [/Best/, /10,000/, "{D36}"], not: [ONLY_TWO] }] },
+      expect: [/Best/, /10,000/, /PDF page \d+/], not: [ONLY_TWO] }] },
 
   /* ── need-first, the way agents type it ──────────────────── */
   { f: 2, name: "EN short: mother 55 diabetic, low premium",
@@ -38,27 +44,27 @@ window.STORY_CASES = [
   { f: 2, name: "EN: mom has sugar, cheap policy",
     steps: [{ say: "My mom is 55, has sugar. Want cheap policy", expect: [BEST_EN, MONEY_EN] }] },
   { f: 2, name: "EN: father 60 BP, budget 15k",
-    steps: [{ say: "father 60 BP patient, budget 15k", expect: [/Best/, /budget was not checked|not compared/i] }] },
+    steps: [{ say: "father 60 BP patient, budget 15k", expect: [/Best|Option 1/, /budget was not checked|not compared/i] }] },
   { f: 2, name: "EN: premium should be less",
     steps: [{ say: "Plan for my mother, 55, diabetes. The premium should be less.", expect: [BEST_EN, MONEY_EN] }] },
   { f: 2, name: "EN: budget is limited",
     steps: [{ say: "mother 55 with diabetes, our budget is limited", expect: [BEST_EN, MONEY_EN] }] },
   { f: 2, name: "EN typos: mothr, yrs, diabetis",
-    steps: [{ say: "my mothr is 55 yrs, diabetis, premium low", expect: [/Best/, MONEY_EN] }] },
+    steps: [{ say: "my mothr is 55 yrs, diabetis, premium low", expect: [/Option 1/, MONEY_EN, /pre-existing wait \d+ months/] }] },
   { f: 2, name: "EN: papa heart problem",
     steps: [{ say: "papa 58 heart problem, need health plan", expect: [/Best/, /Heart/i] }] },
   { f: 2, name: "HL: mummy sugar, sasta plan",
     steps: [{ say: "mummy 55 saal ki hai sugar hai sasta plan batao", expect: [BEST_HL, MONEY_HL] }] },
   { f: 2, name: "HL: papa BP, premium kam",
-    steps: [{ say: "papa ki umar 60 hai bp hai premium kam chahiye", expect: [/Sabse behtar|Best/, MONEY_HL] }] },
+    steps: [{ say: "papa ki umar 60 hai bp hai premium kam chahiye", expect: [/Sabse behtar|Best|Option 1/, MONEY_HL] }] },
   { f: 2, name: "HL WhatsApp style: h for hai",
     steps: [{ say: "maa 55 sal ki h diabetes h ghutno me dard h", expect: [BEST_HL, /Ghutne/] }] },
   { f: 2, name: "HL: waiting 3 saal se kam",
-    steps: [{ say: "meri mummy 55 ki hai, sugar ki problem hai, 3 saal se kam waiting chahiye", expect: [/Sabse behtar|Best/, "{D36}"] }] },
+    steps: [{ say: "meri mummy 55 ki hai, sugar ki problem hai, 3 saal se kam waiting chahiye", expect: [/Sabse behtar|Best/, "{D24}"] }] },
   { f: 2, name: "HL: room 10000 se upar",
     steps: [{ say: "mummy ke liye plan chahiye 50 saal sugar room 10000 se upar", expect: [/Sabse behtar|Best/, /10,000/] }] },
   { f: 2, name: "HI: माँ 55, डायबिटीज़, सस्ता",
-    steps: [{ say: "मेरी माँ 55 साल की हैं, उन्हें डायबिटीज़ है, सस्ता प्लान बताइए", expect: [/सबसे अच्छा|Best/, MONEY_HI] }] },
+    steps: [{ say: "मेरी माँ 55 साल की हैं, उन्हें डायबिटीज़ है, सस्ता प्लान बताइए", expect: [/विकल्प 1|सबसे अच्छा|Best/, MONEY_HI] }] },
   { f: 2, name: "HI: पापा 60, बीपी",
     steps: [{ say: "पापा 60 साल के हैं, बीपी है, कौन सा प्लान लें?", expect: [/सबसे अच्छा|Best/] }] },
   { f: 2, name: "My insurers = ICICI Lombard: their products first",
@@ -121,13 +127,13 @@ window.STORY_CASES = [
 
   /* ── feature 5: close the sale ───────────────────────────── */
   { f: 5, name: "Close kit after the English story", steps: [
-    { say: "My mother is 55 years old. She has diabetes. She has severe pain in her knees. Is there a plan where the premium is also low?", expect: [BEST_EN] },
-    { click: /^Pick this$/, expect: [/Now answering only about/] },
+    { say: "My mother is 55 years old. She has diabetes. She has severe pain in her knees. Is there a plan where the premium is also low?", expect: [BEST_EN, SECOND_EN] },
+    V08,  /* the story's agent sells Optima Secure V08 (option 2); the need stays with the chat */
     { say: "Close the sale", expect: [/Say this to the customer/i, /Knee pain is already there/, "{D36}", /WhatsApp message/i, /UIN HDFHLIP26058V082526/, /Waiting ends/i, /Papers needed to buy/i, /Pre-policy medical check-up/, /Papers at claim time/i, /Do not promise/i, /Do not quote a premium/],
       not: [/Aadhaar|PAN card|X-ray/i] }] },
   { f: 5, name: "Close kit after the Hinglish story", steps: [
-    { say: "maa 55 saal ki hai diabetes hai ghutne me dard hai, pese kam lage", expect: [BEST_HL] },
-    { click: /^Yeh choose karein$/, expect: [/Now answering only about/] },
+    { say: "maa 55 saal ki hai diabetes hai ghutne me dard hai, pese kam lage", expect: [BEST_HL, SECOND_HL] },
+    V08,
     { say: "Close the sale", expect: [/Customer se yeh bolo/i, /Ghutne ka dard pehle se hai/, "{D36}", /WhatsApp/i, /Yeh promise mat karo/i] }] },
   { f: 5, name: "Stopped: National Mediclaim, no other company's product",
     steps: [{ say: "National Mediclaim", expect: [/Stopped product/i, /stopped for new sales on 1 Apr 2024/, /do not sell it to a new customer/, /No current National Insurance wording/], not: [/TATA AIG/] }] },

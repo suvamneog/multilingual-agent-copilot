@@ -102,11 +102,32 @@ async function loadData() {
       S.products.push(uploadAsProduct(u));
     }
   } catch { /* uploads are optional */ }
+  /* policy terms come from the wording (server: retrieve the clause, read it), never from the
+     catalogue's fact table; the catalogue only names the products and their sale status */
+  for (const p of S.products) if (!C.isUpload(p)) { p.facts = {}; p.close_kit = {}; }
   S.byId = new Map(S.products.map((p) => [p.id, p]));
+  await loadWording();
   try {
     const raw = JSON.parse(localStorage.getItem(PROFILE_KEY) || "[]");
     if (Array.isArray(raw)) S.mine = new Set(raw.filter((i) => S.products.some((p) => p.insurer === i)));
   } catch { /* no saved insurers */ }
+}
+async function loadWording() {
+  for (let i = 0; i < 90; i++) {  /* the server reads every wording once at start-up */
+    try {
+      const r = await fetch("/api/wording-facts");
+      if (r.ok) {
+        const wf = await r.json();
+        for (const [id, w] of Object.entries(wf)) {
+          const p = S.byId.get(id);
+          if (p) { p.facts = w.facts || {}; p.close_kit = w.close_kit || {}; }
+        }
+        S.wordingReady = true;
+        return;
+      }
+    } catch { /* server still starting */ }
+    await new Promise((res) => setTimeout(res, 2000));
+  }
 }
 const saveMine = () => { try { localStorage.setItem(PROFILE_KEY, JSON.stringify([...S.mine])); } catch { /* session only */ } };
 const insurers = () => [...new Set(S.products.filter((p) => !C.isUpload(p)).map((p) => p.insurer))];
@@ -254,25 +275,40 @@ function pitchHtml(p, lang) {
   </div>`;
 }
 
-function recCard(a, rank, best, need, lang) {
-  const p = a.product;
-  const ped = p.facts?.ped_wait_months;
-  const end = ped?.stated ? C.waitEndDate(ped.value) : null;
+/* the server's need (rank.py) in the shape the close kit reads */
+function clientNeed(n, text) {
+  return { text, relation: n.relation, age: n.age, conditions: n.conditions || [], absent: n.absent || [],
+    roomRentMin: n.room_rent_min, budgetMax: n.budget_max, lowCost: n.low_cost, pedMaxMonths: null,
+    kind: n.kind, maternity: n.maternity, surgery: n.surgery, signals: n.signals || 1 };
+}
+
+function coverLabel(need, lang) {
+  const k = need.kind;
+  const what = k === "maternity" ? { en: "Maternity cover", hinglish: "Maternity cover", hi: "मातृत्व कवर" }
+    : k === "surgery" ? { en: `${(need.surgery?.kind || "Surgery").replace(/^./, (c) => c.toUpperCase())} cover`, hinglish: `${need.surgery?.kind || "Surgery"} cover`, hi: `${need.surgery?.kind || "सर्जरी"} कवर` }
+      : need.conditions.includes("diabetes") ? { en: "Diabetes cover", hinglish: "Diabetes cover", hi: "डायबिटीज कवर" }
+        : { en: "Declared-condition cover", hinglish: "Declared bimari cover", hi: "बताई बीमारी का कवर" };
+  return what[lang] || what.en;
+}
+
+/* one ranked card from /api/recommend; every figure on it carries its wording page */
+function recCard(c, rank, r, need, lang) {
+  const p = S.byId.get(c.id);
+  if (!p) return "";
   const L = C.closeKit(p, need, lang).labels;
-  const showDate = end && (need.conditions.includes("diabetes") || need.conditions.length);
-  const dateLine = showDate
-    ? (lang === "hi"
-      ? `${need.conditions.includes("diabetes") ? "डायबिटीज" : "Declared"} कवर: <b>${esc(end)}</b>`
-      : lang === "hinglish"
-        ? `${need.conditions.includes("diabetes") ? "Diabetes" : "Declared"} cover: <b>${esc(end)}</b>`
-        : `${need.conditions.includes("diabetes") ? "Diabetes" : "Declared condition"} cover from <b>${esc(end)}</b>`)
+  const opt = r.label_mode === "options";
+  const rankText = opt ? (lang === "hi" ? `विकल्प ${rank}` : `Option ${rank}`) : rankLabel(rank, lang);
+  const dateLine = c.cover_date && need.kind !== "healthy"
+    ? `${esc(coverLabel(need, lang))} ${lang === "en" ? "from" : ":"} <b>${esc(c.cover_date)}</b>`
     : "";
+  const cite = c.cite ? `${c.cite.page}${c.cite.section ? ` · ${c.cite.section}` : ""}` : "";
   return `<div class="rec${rank === 1 ? " rec--best" : ""}" data-rec="${esc(p.id)}">
-    <span class="rec__rank">${esc(rankLabel(rank, lang))}</span>
+    <span class="rec__rank">${esc(rankText)}</span>
     <span class="opt__ins">${esc(p.insurer)}${S.mine.has(p.insurer) ? ` <i class="tag tag--mine">Yours</i>` : ""}</span>
     <span class="opt__name">${esc(C.fullName(p))}</span>
-    <p class="rec__why">${esc(C.whyLine(a, rank, best))}</p>
-    ${dateLine ? `<p class="rec__line">${dateLine}${ped?.section ? ` <span class="cite">${esc(C.pageLabel(C.citePage(ped)))}</span>` : ""}</p>` : ""}
+    <p class="rec__why">${esc(c.why)}</p>
+    ${dateLine ? `<p class="rec__line">${dateLine} <span class="cite">${esc(cite)}</span></p>` : ""}
+    ${c.cite?.quote ? `<details class="how"><summary>${lang === "en" ? "Exact line" : "Exact line"}</summary><q>${esc(c.cite.quote)}</q></details>` : ""}
     <div class="rec__actions">
       <button type="button" class="btn${rank === 1 ? "" : " btn--ghost"} btn--sm" data-act="pick" data-id="${esc(p.id)}">${esc(L.pick)}</button>
       <button type="button" class="pitch-btn" data-act="pitch" aria-expanded="false">${esc(L.pitch)} <span aria-hidden="true">▾</span></button>
@@ -281,43 +317,48 @@ function recCard(a, rank, best, need, lang) {
   </div>`;
 }
 
-function needFirst(need) {
+/* need-first: the server parses the need (negation as a filter) and ranks on it from the wordings */
+async function needFirst(localNeed) {
   const t0 = performance.now();
-  S.need = need;
-  S.lang = C.detectLang(need.text);
+  S.lang = C.detectLang(localNeed.text);
   const lang = S.lang;
-  const r = C.recommend(S.products, need, S.mine, S.byId);
-  const answer = C.needAnswer(need, r, lang);
-  const tops = [r.best, r.second].filter(Boolean); /* story Feature 3: best + second only */
-  const cards = tops.length
-    ? tops.map((a, i) => recCard(a, i + 1, r.best, need, lang)).join("")
-    : "";
+  const bubble = typing(lang === "en" ? "Reading the wordings…" : lang === "hi" ? "वर्डिंग पढ़ रहा हूँ…" : "Wordings padh raha hoon…");
+  let r;
+  try {
+    const resp = await fetch("/api/recommend", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: localNeed.text, mine: [...S.mine] }) });
+    if (!resp.ok) throw new Error(`/api/recommend returned ${resp.status}`);
+    r = await resp.json();
+  } catch (e) {
+    bubble.innerHTML = `<span class="badge b-stop">Couldn't reach the wording search</span><br>${esc(e.message)}.`;
+    return;
+  }
+  bubble.remove();
+  const need = clientNeed(r.need, localNeed.text);
+  S.need = need;
+  const answer = r.lines[lang] || r.lines.en;
+  const tops = [r.best, r.second].filter(Boolean); /* Feature 3: best + second only */
+  const cards = tops.length ? tops.map((c, i) => recCard(c, i + 1, r, need, lang)).join("") : "";
   const scope = r.scope === "mine"
     ? `<p class="small">${lang === "hi" ? "पहले आपके इंश्योरर:" : lang === "hinglish" ? "Pehle aapke insurers:" : "Your insurers first:"} ${esc([...S.mine].join(", "))}.</p>`
     : r.scope === "mine-none"
       ? `<p class="small">${lang === "hi" ? "आपके इंश्योरर में फिट नहीं — बाकी दिखा रहा हूँ।" : lang === "hinglish" ? "Aapke insurers mein fit nahi — baaki dikha raha hoon." : "None of your insurers fit — showing every insurer."}</p>`
       : "";
-  const wp = r.watch?.product;
-  const watchWhy = r.watch?.carved
-    ? { en: `its wording lifts the pre-existing wait for ${r.watch.carvedFor}`, hi: `इसकी वर्डिंग में ${r.watch.carvedFor} का PED वेट नहीं`, hinglish: `iski wording mein ${r.watch.carvedFor} ka PED wait nahi` }[lang]
-    : { en: `${r.watch?.pedMonths}-month wait`, hi: `${r.watch?.pedMonths} महीने वेट`, hinglish: `${r.watch?.pedMonths} months wait` }[lang];
-  const watch = wp
-    ? `<div class="watch"><p><b>${lang === "hi" ? "यह भी देखें (रैंक नहीं)" : lang === "hinglish" ? "Yeh bhi check karo (not ranked)" : "Also check (not ranked)"}: ${esc(C.label(wp))}</b> — ${esc(watchWhy)}.
-        ${esc(lang === "hi" ? "पर इसकी वर्डिंग में एंट्री उम्र नहीं लिखी — prospectus से उम्र कन्फ़र्म करें, फिर बेचें।"
-          : lang === "hinglish" ? "Par wording mein entry age likhi nahi — prospectus se age confirm karo, phir becho."
-            : `But its wording does not state the entry age — confirm age ${need.age} in the prospectus before you sell it.`)}</p>
-        ${C.conditionLines(wp, need).map((l) => `<p class="small">${esc(l.k)}: ${esc(l.v)}${l.cite ? ` · ${esc(l.cite)}` : ""}</p>`).join("")}
-        <button type="button" class="btn" data-act="pick" data-id="${esc(wp.id)}">${esc(lang === "en" ? "Open this product" : "Yeh product kholo")}</button></div>`
+  const w = r.watch;
+  const watch = w
+    ? `<div class="watch"><p><b>${lang === "hi" ? "यह भी देखें (रैंक नहीं)" : lang === "hinglish" ? "Yeh bhi check karo (not ranked)" : "Also check (not ranked)"}: ${esc(w.label)}</b> — ${esc(w.why)}</p>
+        ${w.cover_date && need.kind !== "healthy" ? `<p class="small">${esc(coverLabel(need, lang))}: ${esc(w.cover_date)} · ${esc(w.cite?.page || "")}</p>` : ""}
+        <button type="button" class="btn" data-act="pick" data-id="${esc(w.id)}">${esc(lang === "en" ? "Open this product" : "Yeh product kholo")}</button></div>`
     : "";
   const others = r.others.length
     ? `<details class="others"><summary>${lang === "hi" ? "बाकी क्यों नहीं" : lang === "hinglish" ? "Baaki kyun nahi" : "Why not the others"}</summary><ul>${r.others.map((o) =>
-        `<li><b>${esc(o.products.map(C.label).join(", "))}</b> — ${esc(o.reason)}</li>`).join("")}</ul></details>`
+        `<li><b>${esc(o.products.join(", "))}</b> — ${esc(o.reason)}</li>`).join("")}</ul></details>`
     : "";
   add("bot rich", `${answer.map((line, i) => `<p class="${i === 0 ? "lead" : ""}">${esc(line)}</p>`).join("")}${scope}
     ${cards ? `<div class="recs">${cards}</div>` : ""}
     ${watch}
     ${others}
-    <div class="meta">${lang === "hi" ? `${S.products.filter((p) => !C.isUpload(p)).length} पॉलिसी · ${ms(t0)} ms` : lang === "hinglish" ? `${S.products.filter((p) => !C.isUpload(p)).length} policies check · ${ms(t0)} ms` : `Checked ${S.products.filter((p) => !C.isUpload(p)).length} policies in ${ms(t0)} ms`}</div>`);
+    <div class="meta">${lang === "hi" ? `${r.checked} पॉलिसी की वर्डिंग · ${ms(t0)} ms` : lang === "hinglish" ? `${r.checked} policies ki wording check · ${ms(t0)} ms` : `Read ${r.checked} policy wordings in ${ms(t0)} ms`}</div>`);
 }
 
 /* ── feature 4: simple vs hard ─────────────────────────── */
@@ -337,8 +378,8 @@ function answer(p, text) {
       return add("bot", `<span class="badge b-ok">Fast answer</span><p class="lead">Premium: ₹${esc(Number(f.value).toLocaleString("en-IN"))}.</p><div class="meta">${ms(t0)} ms</div>`);
     }
     return add("bot", `${stopNote}<span class="badge b-warn">Not written in this product</span>
-      <p class="lead">Premium is not written in the ${esc(C.fullName(p).replace(/\s+wording$/i, ""))} wording.</p>
-      <p class="small">Money is not compared in this tool. The premium comes from the insurer rate card after the health check — never from memory.</p><div class="meta">Answered in ${ms(t0)} ms</div>`);
+      <p class="lead">Premium is not written in this wording. Money is not compared. Premium comes from the insurer rate card after the health check.</p>
+      <div class="meta">Answered in ${ms(t0)} ms</div>`);
   }
   if (intent?.kind === "fast" && !C.isUpload(p)) {
     const a = C.simpleAnswer(p, intent.id);
@@ -426,10 +467,20 @@ function renderCards(cites, policyId, id) {
 function closeKitMsg(p) {
   if (p.status === "withdrawn") return stoppedNotice(p);
   const lang = S.lang || "en";
+  /* tapping "Close the sale" again shows the same panel, it does not add a second one */
+  const kitKey = `${p.id}|${lang}|${JSON.stringify(S.need?.conditions || [])}`;
+  const last = [...chat.querySelectorAll("[data-kit]")].pop();
+  const after = [];
+  for (let el = last?.nextElementSibling; el; el = el.nextElementSibling) after.push(el);
+  if (last && last.dataset.kit === kitKey && after.every((el) => el.classList.contains("me"))) {
+    last.scrollIntoView({ block: "start", behavior: "smooth" });
+    last.classList.add("hl"); setTimeout(() => last.classList.remove("hl"), 1200);
+    return last;
+  }
   const k = C.closeKit(p, S.need, lang);
   const id = ++BID;
   const L = k.labels;
-  return add("bot rich", `<p class="kit__h">${esc(L.pitch)} · ${esc(C.fullName(p))}</p>
+  const el = add("bot rich", `<p class="kit__h">${esc(L.pitch)} · ${esc(C.fullName(p))}</p>
     <div class="kit"><p class="kit__t">${esc(L.say)}</p>${k.say.map((s) => `<p>${esc(s)}</p>`).join("")}</div>
     <div class="kit"><p class="kit__t">${esc(L.wa)}</p><pre class="wa" id="wa${id}">${esc(k.whatsapp)}</pre>
       <div class="kit__row"><button type="button" class="btn btn--sm" data-act="copy" data-src="wa${id}">Copy</button>
@@ -438,6 +489,8 @@ function closeKitMsg(p) {
       ? `<p><b>${esc(k.waitEnd.date)}</b> — ${k.waitEnd.months} months. <span class="cite">${esc(k.waitEnd.cite)}</span></p>`
       : `<p>${lang === "en" ? "Not written in this product." : "Is product mein nahi likha."}</p>`}</div>
     ${kitLists(k, L, lang)}`);
+  el.dataset.kit = kitKey;
+  return el;
 }
 
 /* sale papers and claim papers stay separate; each line cites its wording page */
@@ -499,7 +552,9 @@ function send(raw) {
   const need = C.parseNeed(text);
   const intent = C.classify(text);
   /* a short command ("Close the sale" chip) keeps the conversation's language */
-  if (!(intent?.kind === "close" && text.split(/\s+/).length <= 4)) S.lang = C.detectLang(text);
+  /* a short English message (a product name, "Close the sale") keeps the conversation's language */
+  const lang0 = C.detectLang(text);
+  if (!(lang0 === "en" && text.split(/\s+/).length <= 4 && S.lang && S.lang !== "en")) S.lang = lang0;
   const matches = C.matchProducts(text, S.products, S.mine);
   /* "Is maternity covered?" on a picked product asks about it; it does not switch to Care Joy */
   const topicOnly = !!S.selected && C.onlyTopicMatch(text, S.products);
