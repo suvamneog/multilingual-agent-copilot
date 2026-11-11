@@ -45,7 +45,7 @@ window.STORY_CASES = [
       expect: [/Option 1/, DATE, PAGE] },
     { say: "Optima", expect: [/Which exact product/, /Optima Secure V08/, /only after you pick/] },
     { click: /Optima Secure V08/, expect: [/Now answering only about HDFC ERGO Optima Secure V08/] },
-    { say: "premium kitna hoga", expect: [PREMIUM, /₹34,569 saal ka/, /diabetes ya bimari ki loading se pehle/] },
+    { say: "premium kitna hoga", expect: [/Optima Secure V08[^:]*: ₹34,569 saal ka/, /diabetes ya bimari ki loading se pehle/] },
     { say: "cataract limit kya hai", expect: [/page 31/i, /24 months/, /In simple words/, /Specified Disease|Code-Excl02/i], not: [/For which product/] },
     { say: "robotic surgery covered hai?", expect: [/not written|Not written/], not: [NO_ERR, /For which product/] },
     { say: "AYUSH covered hai?", expect: [/page 12/i, /AYUSH/, /1\.4/], not: [/For which product/] },

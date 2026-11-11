@@ -432,10 +432,28 @@ async function rateCard(p, text, box) {
     const q = new URLSearchParams({ product: p.id, city });
     if (age !== null) q.set("age", age);
     r = await (await fetch(`/api/premium?${q}`)).json();
-  } catch { return; }
+  } catch { r = null; }
   const inr = (n) => "₹" + Number(n).toLocaleString("en-IN");
   const lang = S.lang || "en";
   const T = RATE_T[lang] || RATE_T.en;
+  /* the first line is always a direct answer: the price, or plainly that no price is loaded for this plan */
+  const leadEl = box.closest(".msg")?.querySelector("[data-rate-lead]");
+  const name = C.fullName(p);
+  const setLead = (s) => { if (leadEl) leadEl.textContent = s; };
+  const pq0 = r?.profile_quote;
+  const off0 = pq0?.found && age !== null && (age < 51 || age > 55);
+  if (r?.available && r.prices) {
+    const x = r.prices.find((v) => v.sum_insured === 1000000) || r.prices[0];
+    setLead(T.leadChart(name, x.min === x.max ? inr(x.min) : `${inr(x.min)} – ${inr(x.max)}`, x.sum_insured / 100000, r.age, r.zone));
+  } else if (pq0?.found && !off0) {
+    setLead(T.leadProfile(name, inr(pq0.annual_premium_inr)));
+  } else if (off0) {
+    setLead(T.leadOffAge(name, age));
+  } else if (r?.available && r.need === "age") {
+    setLead(T.leadAskAge(name));
+  } else {
+    setLead(T.leadNone(name));
+  }
   const lakh = (n) => T.lakh(n / 100000);
   const badge = box.closest(".msg")?.querySelector("[data-money-badge]");
   const found = () => { if (badge) { badge.className = "badge b-ok"; badge.textContent = T.badge; } };
@@ -444,16 +462,14 @@ async function rateCard(p, text, box) {
   const rules = r?.rules ? `<p class="small">${esc(T.rules)}</p>` : "";
   /* the money chart is for a 55-year-old: a known age outside 51-55 never sees that figure */
   const offProfile = pq?.found && age !== null && (age < 51 || age > 55);
-  const pqHtml = !pq ? "" : offProfile
-    ? `<div class="kit" data-money="age"><p><b>Premium:</b> ${esc(T.offAge(age))}</p></div>`
-    : pq.found
+  const pqHtml = !pq || offProfile || !pq.found ? "" : pq.found
     ? `<div class="kit" data-money="1"><p><b>Premium:</b> <b>${inr(pq.annual_premium_inr)} ${esc(T.perYear)}</b></p>
         <p class="small">${esc(T.profile)}: ${esc(pq.profile)}. ${esc(T.source)}: ${esc(pq.source || "")}${pq.uin ? ` (UIN ${esc(pq.uin)})` : ""}, ${esc(T.checked)} ${esc(pq.checked)}.${pq.notes ? ` ${esc(pq.notes)}.` : ""}</p>
         ${pq.warning ? `<p class="stopline">${esc(T.older)}</p>` : ""}</div>`
     : `<div class="kit" data-money="0"><p><b>Premium:</b> ${esc(T.notFound)}</p>
         <p class="small">${esc(T.profile)}: ${esc(pq.profile)}, ${esc(pq.checked)}. ${esc(T.noEstimate)}</p></div>`;
   if (pq?.found && !offProfile) found();
-  if (!r?.available) { if (pq) box.innerHTML = pqHtml + rules; return; }
+  if (!r?.available) { if (pqHtml) box.innerHTML = pqHtml + rules; return; }
   const src = `<p class="small">${esc(T.source)}: <a href="${esc(r.source_url)}" target="_blank">${esc(r.source)}</a> (UIN ${esc(r.uin)}), ${esc(T.checked)} ${esc(r.checked_on)}. ${esc(T.basis)}</p>`;
   if (r.need === "age") {
     box.innerHTML = `${pqHtml}<p><b>${esc(T.askAge)}</b></p>${src}${rules}`;
@@ -466,7 +482,12 @@ async function rateCard(p, text, box) {
   box.innerHTML = `${pqHtml}<p><b>${esc(T.official)}</b> — ${esc(T.age)} ${r.age} (${esc(r.age_band)}), ${esc(T.oneAdult)}, ${where}:</p><ul>${rows}</ul>${src}${rules}`;
 }
 const RATE_T = {
-  en: { badge: "Premium from rate chart", perYear: "per year", profile: "Profile", source: "Source", checked: "checked",
+  en: { leadChart: (n, v, si, a, z) => `${n}: ${v} per year for ₹${si} lakh cover, age ${a}${z ? `, Zone ${z}` : ""}.`,
+    leadProfile: (n, v) => `${n}: ${v} per year (age 55, Guwahati, ₹10 lakh cover).`,
+    leadOffAge: (n, a) => `${n}: no price loaded for age ${a}. Get a live quote from the insurer with the age, city and cover amount.`,
+    leadAskAge: (n) => `${n}: tell me the age and city to get the exact price.`,
+    leadNone: (n) => `${n}: no price is loaded for this plan. Get a live quote from the insurer with the age, city and cover amount.`,
+    badge: "Premium from rate chart", perYear: "per year", profile: "Profile", source: "Source", checked: "checked",
     older: "This figure is from an older version of the product. Verify with the insurer before quoting.",
     notFound: "Not found — get a live quote from the insurer.", noEstimate: "No figure is estimated.",
     offAge: (a) => `the premium figure loaded is only for a 55-year-old, so it is not shown for age ${a}. Get a live quote from the insurer for this age.`,
@@ -475,7 +496,12 @@ const RATE_T = {
     askAge: "The insurer's official rate chart is loaded. Tell me the age and city (for example “premium for 55, Pune”) for the exact chart price.",
     noAge: "This age is not in the insurer's rate chart.", official: "From the insurer's official rate chart", age: "age",
     oneAdult: "1 adult", allZones: (n) => `all ${n} zones — name the city for the exact one`, lakh: (n) => `₹${n} lakh` },
-  hinglish: { badge: "Rate chart se premium", perYear: "saal ka", profile: "Profile", source: "Source", checked: "check kiya",
+  hinglish: { leadChart: (n, v, si, a, z) => `${n}: ${v} saal ka, ₹${si} lakh cover, umar ${a}${z ? `, Zone ${z}` : ""}.`,
+    leadProfile: (n, v) => `${n}: ${v} saal ka (umar 55, Guwahati, ₹10 lakh cover).`,
+    leadOffAge: (n, a) => `${n}: ${a} saal ke liye price load nahi hai. Umar, shehar aur cover batake insurer se live quote lo.`,
+    leadAskAge: (n) => `${n}: exact price ke liye umar aur shehar batao.`,
+    leadNone: (n) => `${n}: is plan ka price load nahi hai. Umar, shehar aur cover batake insurer se live quote lo.`,
+    badge: "Rate chart se premium", perYear: "saal ka", profile: "Profile", source: "Source", checked: "check kiya",
     older: "Yeh figure product ke purane version ka hai. Quote dene se pehle insurer se confirm karo.",
     notFound: "Nahi mila — insurer se live quote lo.", noEstimate: "Koi andaaza nahi lagaya.",
     offAge: (a) => `loaded premium sirf 55 saal ke liye hai, isliye ${a} saal ke liye nahi dikhaya. Is umar ke liye insurer se live quote lo.`,
@@ -484,7 +510,12 @@ const RATE_T = {
     askAge: "Insurer ka official rate chart loaded hai. Umar aur shehar batao (jaise “premium for 55, Pune”), main exact chart price dikhaunga.",
     noAge: "Yeh umar insurer ke rate chart mein nahi hai.", official: "Insurer ke official rate chart se", age: "umar",
     oneAdult: "1 adult", allZones: (n) => `saare ${n} zones — exact ke liye shehar batao`, lakh: (n) => `₹${n} lakh` },
-  hi: { badge: "रेट चार्ट से प्रीमियम", perYear: "सालाना", profile: "प्रोफ़ाइल", source: "स्रोत", checked: "जाँचा",
+  hi: { leadChart: (n, v, si, a, z) => `${n}: ${v} सालाना, ₹${si} लाख कवर, उम्र ${a}${z ? `, Zone ${z}` : ""}।`,
+    leadProfile: (n, v) => `${n}: ${v} सालाना (उम्र 55, गुवाहाटी, ₹10 लाख कवर)।`,
+    leadOffAge: (n, a) => `${n}: ${a} साल के लिए price लोड नहीं है। उम्र, शहर और कवर बताकर इंश्योरर से live quote लें।`,
+    leadAskAge: (n) => `${n}: सटीक price के लिए उम्र और शहर बताइए।`,
+    leadNone: (n) => `${n}: इस प्लान का price लोड नहीं है। उम्र, शहर और कवर बताकर इंश्योरर से live quote लें।`,
+    badge: "रेट चार्ट से प्रीमियम", perYear: "सालाना", profile: "प्रोफ़ाइल", source: "स्रोत", checked: "जाँचा",
     older: "यह आंकड़ा प्रोडक्ट के पुराने version का है। quote से पहले इंश्योरर से कन्फ़र्म करें।",
     notFound: "नहीं मिला — इंश्योरर से live quote लें।", noEstimate: "कोई अनुमान नहीं लगाया।",
     offAge: (a) => `लोड किया गया प्रीमियम सिर्फ़ 55 साल के लिए है, इसलिए ${a} साल के लिए नहीं दिखाया। इस उम्र के लिए इंश्योरर से live quote लें।`,
@@ -507,14 +538,9 @@ function answer(p, text) {
       return add("bot", `<span class="badge b-ok">Fast answer</span><p class="lead">Premium: ₹${esc(Number(f.value).toLocaleString("en-IN"))}.</p><div class="meta">${ms(t0)} ms</div>`);
     }
     const lang = S.lang || "en";
-    const lead = {
-      en: "Premium is not written in this wording. Money is not compared. Premium comes from the insurer rate card after the health check.",
-      hinglish: "Premium policy wording mein nahi likha hota. Paisa compare nahi kiya. Premium insurer ke rate card se health check ke baad aata hai.",
-      hi: "प्रीमियम पॉलिसी वर्डिंग में नहीं लिखा होता। पैसे की तुलना नहीं की गई। प्रीमियम हेल्थ चेक के बाद इंश्योरर के rate card से आता है।",
-    }[lang] || "";
     const badge = { en: "Premium", hinglish: "Premium", hi: "प्रीमियम" }[lang] || "Premium";
     const el = add("bot", `${stopNote}<span class="badge b-warn" data-money-badge>${esc(badge)}</span>
-      <p class="lead">${esc(lead)}</p>
+      <p class="lead" data-rate-lead>…</p>
       <div class="rate" data-rate="1"></div>
       <div class="meta">Answered in ${ms(t0)} ms</div>`);
     rateCard(p, text, el.querySelector("[data-rate]"));
