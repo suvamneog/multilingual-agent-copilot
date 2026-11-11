@@ -555,6 +555,12 @@ function send(raw) {
   /* a short English message (a product name, "Close the sale") keeps the conversation's language */
   const lang0 = C.detectLang(text);
   if (!(lang0 === "en" && text.split(/\s+/).length <= 4 && S.lang && S.lang !== "en")) S.lang = lang0;
+  /* gate 1, scope: only health wordings are loaded; another line of insurance is refused, never ranked */
+  const other = C.outOfScope(text);
+  if (other) {
+    add("bot", `<span class="badge b-stop">Not in these policies</span><br><p class="lead" data-scope="${other}">${esc(C.scopeMessage(other, S.lang || "en", S.products.length))}</p>`);
+    return;
+  }
   const matches = C.matchProducts(text, S.products, S.mine);
   /* "Is maternity covered?" on a picked product asks about it; it does not switch to Care Joy */
   const topicOnly = !!S.selected && C.onlyTopicMatch(text, S.products);
@@ -567,6 +573,11 @@ function send(raw) {
     return askWhich(matches, intent ? text : null);
   }
   if (C.isNeed(need, !!S.selected)) { S.choices = null; S.pending = null; return needFirst(need); }
+  /* gate 2: "konsa plan accha hai" with no person, age or illness — ask, never rank a guess */
+  if (need.shopping && !need.real && !intent) {
+    add("bot", `<p class="lead" data-askneed="1">${esc(C.ASK_NEED[S.lang] || C.ASK_NEED.en)}</p>`);
+    return;
+  }
   if (S.choices) {
     add("bot", `<p class="lead">Pick the exact product first — then I'll answer “${esc(text)}” for that one only.</p>`);
     return askWhich(S.choices, text);

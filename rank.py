@@ -263,6 +263,11 @@ def _why_best(a: dict, need: dict, lang: str) -> str:
 def recommend(text: str, mine: list[str] | None = None, today: date | None = None) -> dict:
     today = today or date.today()
     need = parse_need(text)
+    from answer import other_line
+    if other_line(text):   # gate 1: never rank health plans for a car / life / travel question
+        return {"need": need, "status": "out_of_scope", "cards": [], "lines": []}
+    if not need["signals"] and not need.get("room_rent_min") and not need.get("ped_max_months"):
+        return {"need": need, "status": "need_unclear", "cards": [], "lines": []}   # gate 2: ask, do not guess
     reg = registry()
     byid = {p["id"]: p for p in reg}
     for p in reg:

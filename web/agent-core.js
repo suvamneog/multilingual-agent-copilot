@@ -167,12 +167,50 @@
     /* maternity / surgery / healthy words describe a customer only when no product is picked,
        or alongside a person or an age ("Is maternity covered?" on a picked product stays a question) */
     need.storySignals = (need.maternity ? 1 : 0) + (need.surgery ? 1 : 0) + (need.healthy ? 1 : 0) + (need.absent.length ? 1 : 0);
+    /* a real need names a person, an age, an illness or a goal; "konsa plan accha hai" alone is not one */
+    need.real = !!(need.relation || need.age !== null || need.conditions.length || need.roomRentMin !== null ||
+      need.budgetMax !== null || need.pedMaxMonths !== null || need.lowCost || need.storySignals);
+    need.shopping = shopping;
     return need;
   }
+
+  /* scope gate: only health insurance wordings are loaded. Returns the other line of insurance, or null. */
+  const SCOPE = [
+    ["motor", /\b(car|cars|bike|bikes|scooter|scooty|two[- ]?wheeler|four[- ]?wheeler|vehicle|motor|gaadi|gadi|gaddi|truck|taxi|auto ?rickshaw|own[- ]damage|idv)\b|कार|गाड़ी|बाइक/i],
+    ["life", /\b(term (?:plan|insurance|policy|cover)|life insurance|life cover|jeevan|lic|endowment|ulip|money ?back|death benefit)\b|जीवन बीमा|टर्म/i],
+    ["travel", /\b(travel (?:insurance|policy|plan)|trip insurance|visa insurance|flight insurance)\b/i],
+    ["home", /\b(home insurance|house insurance|ghar ka bima|fire insurance|shop insurance|property insurance|burglary)\b/i],
+    ["pet", /\b(pet insurance|dog insurance|cattle insurance|crop insurance|fasal bima)\b/i],
+  ];
+  function outOfScope(text) {
+    const t = String(text || "");
+    /* "car accident hospital bill" is a health question */
+    if (/accident|hospital|injur|treatment|ilaa?j|chot|surgery|fracture|ambulance|disease|bimari|health|mediclaim|अस्पताल|इलाज|चोट/i.test(t)) return null;
+    for (const [kind, re] of SCOPE) if (re.test(t)) return kind;
+    return null;
+  }
+  const SCOPE_MSG = {
+    en: (k) => `I only know health insurance: the ${"{n}"} health policy wordings loaded here. No ${k} insurance wording is loaded, so I cannot answer that. Ask me about a health plan, or tell me about the customer (age, illness, need).`,
+    hinglish: (k) => `Main sirf health insurance jaanta hoon — yahan ${"{n}"} health policy wordings hain. ${k} insurance ki koi wording load nahi hai, isliye iska jawab nahi de sakta. Health plan ke baare mein poochiye, ya customer ke baare mein batayiye (umar, bimari, zaroorat).`,
+    hi: (k) => `मैं सिर्फ़ हेल्थ इंश्योरेंस जानता हूँ — यहाँ ${"{n}"} हेल्थ पॉलिसी wordings हैं। ${k} इंश्योरेंस की कोई wording लोड नहीं है, इसलिए इसका जवाब नहीं दे सकता।`,
+  };
+  const SCOPE_NAME = { motor: { en: "car / bike (motor)", hinglish: "Car / bike (motor)", hi: "कार / बाइक (मोटर)" },
+    life: { en: "life / term", hinglish: "Life / term", hi: "लाइफ़ / टर्म" }, travel: { en: "travel", hinglish: "Travel", hi: "ट्रैवल" },
+    home: { en: "home / property", hinglish: "Ghar / property", hi: "घर / प्रॉपर्टी" }, pet: { en: "pet / crop", hinglish: "Pet / crop", hi: "पेट / फ़सल" } };
+  function scopeMessage(kind, lang, n) {
+    const l = SCOPE_MSG[lang] ? lang : "en";
+    return SCOPE_MSG[l](SCOPE_NAME[kind][l]).replace("{n}", n);
+  }
+  const ASK_NEED = {
+    en: "For whom is the plan? Tell me the age and any illness (for example “mother 58, diabetes”), and I'll rank the plans from their wordings.",
+    hinglish: "Plan kiske liye hai? Umar aur koi bimari batayiye (jaise “mummy 58, diabetes”), phir main wording dekh kar plan rank karunga.",
+    hi: "प्लान किसके लिए है? उम्र और कोई बीमारी बताइए (जैसे “माँ 58, डायबिटीज़”), फिर मैं wording देखकर प्लान रैंक करूँगा।",
+  };
 
   /* a need beats a question unless a product is already pinned and the only
      signal is a condition word inside a question about that product */
   function isNeed(need, productPinned) {
+    if (need.real === false) return false;   /* shopping words alone: ask for whom, never rank a guess */
     if (need.signals > 0) return true;
     if (need.storySignals > 0 && (!productPinned || need.relation || need.age !== null)) return true;
     return !productPinned && need.conditions.length > 0;
@@ -194,7 +232,7 @@
   function detectLang(text) {
     const t = String(text || "");
     if (/[\u0900-\u097f]/.test(t)) return "hi";
-    const hits = (t.toLowerCase().match(/\b(hai|hain|hoga|hogi|mein|meh|meri|mera|mere|mummy|maa|ma|unhe|unke|humne|chahiye|chahie|kitna|kitni|kya|koi|batao|bataye|saal|sal|pese|paise|sasta|jyada|zyada|pehle|dal|sake|woh|yeh|aur|lekin|but|ke|ki|ka)\b/g) || []).length;
+    const hits = (t.toLowerCase().match(/\b(hai|hain|hoga|hogi|mein|meh|meri|mera|mere|mummy|maa|ma|unhe|unke|humne|chahiye|chahie|kitna|kitni|kya|koi|batao|bataye|konsa|kaunsa|accha|acha|achha|saal|sal|pese|paise|sasta|jyada|zyada|pehle|dal|sake|woh|yeh|aur|lekin|but|ke|ki|ka)\b/g) || []).length;
     if (hits >= 2) return "hinglish";
     return "en";
   }
@@ -775,7 +813,7 @@
 
   window.QPCore = {
     fullName, label, isUpload, policyIdOf, citePage, pageLabel, waitEndDate, fmtDate, fmtMonths,
-    parseNeed, isNeed, needSummary, detectLang, needAnswer, assess, recommend, whyLine, conditionLines,
+    parseNeed, isNeed, outOfScope, scopeMessage, ASK_NEED, needSummary, detectLang, needAnswer, assess, recommend, whyLine, conditionLines,
     matchProducts, onlyTopicMatch, difference, differences, classify, simpleAnswer, hardFact, closeKit,
   };
 })();

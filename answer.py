@@ -134,7 +134,31 @@ def detect_lang(q: str) -> str:
     return "hinglish" if len(words & HINGLISH_WORDS) >= 2 else "en"
 
 
+OTHER_LINE = re.compile(
+    r"\b(car|cars|bike|bikes|scooter|scooty|two[- ]?wheeler|four[- ]?wheeler|vehicle|motor|gaadi|gadi|truck|taxi|"
+    r"own[- ]damage|idv|term (?:plan|insurance|policy|cover)|life insurance|life cover|jeevan|lic|endowment|ulip|"
+    r"money ?back|death benefit|travel (?:insurance|policy|plan)|trip insurance|home insurance|house insurance|"
+    r"fire insurance|shop insurance|property insurance|pet insurance|crop insurance|fasal bima)\b|कार|गाड़ी|बाइक|जीवन बीमा",
+    re.I)
+OUT_OF_SCOPE["other_line"] = {
+    "en": "I only answer from the health insurance wordings loaded here. No car, life, travel or home insurance wording is loaded, so I cannot answer that.",
+    "hi": "मैं सिर्फ़ यहाँ लोड की गई हेल्थ इंश्योरेंस wordings से जवाब देता हूँ। कार, लाइफ़, ट्रैवल या घर के बीमे की कोई wording लोड नहीं है।",
+    "hinglish": "Main sirf yahan load ki gayi health insurance wordings se jawab deta hoon. Car, life, travel ya ghar ke insurance ki koi wording load nahi hai.",
+}
+
+
+HEALTH_CTX = re.compile(r"accident|hospital|injur|treatment|ilaaj|ilaj|chot|surgery|fracture|ambulance|disease|bimari|"
+                        r"health|mediclaim|अस्पताल|इलाज|चोट", re.I)
+
+
+def other_line(q: str) -> bool:
+    """car / life / travel / home insurance — but "car accident hospital bill" is a health question"""
+    return bool(OTHER_LINE.search(q)) and not HEALTH_CTX.search(q)
+
+
 def route(q: str) -> str:
+    if other_line(q):   # gate 1, scope: another line of insurance is refused before anything else
+        return "other_line"
     for name, rx in ROUTES:
         if rx.search(q):
             return name
@@ -437,6 +461,12 @@ def _ask_stream(question: str, policy_id: str, gen: Generator) -> Iterator[dict]
                "ms": int((time.time() - t0) * 1000)}
         return
 
+    fa = fact_answer(question, policy_id, lang)
+    if fa:
+        yield {"type": "final", "status": "answered", "answer": fa["answer"], "citations": fa["citations"], "lang": lang,
+               "backend": "wording_facts", "rule": "fact:" + fa["field"], "ms": int((time.time() - t0) * 1000)}
+        return
+
     # a topic the wording never mentions ("robotic" in Optima Secure V08) is "not written" — no model needed
     absent = topic_absent(question, policy_id)
     if absent:
@@ -640,6 +670,62 @@ def verify(answer: str, cited: list[int], clauses: list[dict], question: str, po
         return {"status": "not_stated", "reason": "no sentence survived the figure check", "dropped": dropped}
     out = re.sub(r"^(?:However|But|Also|Lekin|Par|लेकिन),?\s+(\w)", lambda m: m.group(1).upper(), " ".join(kept))
     return {"status": "answered", "answer": out, "cited": cited, "dropped": dropped}
+
+
+# ---------- gate 4: questions about a fact already read from the wording are answered from that fact ----------
+
+WAIT_Q = re.compile(r"wait|kitne din|kitna (?:samay|time)|kab se|kab tak|intez?aa?r|वेटिंग|प्रतीक्षा|period|months?|days?|mahine|din\b", re.I)
+FACT_Q = [  # (fact field, question pattern) — first match wins
+    ("initial_wait", re.compile(r"initial|first 30|30[- ]?(?:din|days?)|शुरुआती|cooling|policy (?:shuru|start)[^?]{0,30}(?:baad|after)|after the policy starts", re.I)),
+    ("specified_disease_wait_months", re.compile(r"specified|specific (?:disease|illness)|listed (?:disease|illness|condition)|hernia|piles|बवासीर|हर्निया", re.I)),
+    ("ped_wait_months", re.compile(r"pre[- ]?existing|\bPED\b|पहले से|purani bimari|already (?:has|have)", re.I)),
+]
+FACT_ANS = {
+    "initial_wait": {
+        "en": "The initial waiting period is {n} days from the first policy start date: illness claims in that time are not paid [1].",
+        "hinglish": "Initial waiting period {n} din ka hai, pehli policy shuru hone ki date se: is beech bimari ka claim nahi milta [1].",
+        "hi": "शुरुआती वेटिंग पीरियड {n} दिन का है, पहली पॉलिसी शुरू होने की तारीख़ से: इस दौरान बीमारी का क्लेम नहीं मिलता [1]।"},
+    "initial_wait+accident": {
+        "en": " Accidents are not subject to this wait [1].", "hinglish": " Accident par yeh wait nahi lagta [1].",
+        "hi": " दुर्घटना पर यह वेटिंग लागू नहीं होती [1]।"},
+    "ped_wait_months": {
+        "en": "Pre-existing diseases are covered after {n} months of continuous cover from the first policy start date [1].",
+        "hinglish": "Pre-existing bimari {n} months ki continuous cover ke baad cover hoti hai, pehli policy shuru hone se [1].",
+        "hi": "पहले से मौजूद बीमारी {n} महीने की लगातार कवरेज के बाद कवर होती है, पहली पॉलिसी शुरू होने से [1]।"},
+    "specified_disease_wait_months": {
+        "en": "The listed (specified) illnesses and procedures are covered after {n} months of continuous cover [1].",
+        "hinglish": "Listed (specified) bimariyan aur procedures {n} months ki continuous cover ke baad cover hote hain [1].",
+        "hi": "सूची में दी गई (specified) बीमारियाँ और प्रक्रियाएँ {n} महीने की लगातार कवरेज के बाद कवर होती हैं [1]।"},
+}
+FACT_NOTE = {"en": " Plan variants: {v}.", "hinglish": " Plan variants: {v}.", "hi": " प्लान वेरिएंट: {v}।"}
+
+
+def fact_answer(question: str, policy_id: str | None, lang: str) -> dict | None:
+    """A waiting-period question whose answer is a fact read from this product's wording (wording.py).
+    Answered from that fact with its quote and page; the model never writes the number."""
+    if not policy_id or not WAIT_Q.search(question):
+        return None
+    field = next((f for f, rx in FACT_Q if rx.search(question)), None)
+    if not field:
+        return None
+    try:
+        from wording import all_facts
+        g = all_facts([policy_id]).get(policy_id, {}).get("facts", {}).get(field, {})
+    except Exception:
+        return None
+    if not g.get("stated") or not isinstance(g.get("value"), int) or not g.get("quote"):
+        return None   # not read from the wording: the normal retrieval path answers or says not stated
+    if re.search(r"not readable|optional|unclear|could not", g.get("note") or "", re.I):
+        return None   # the parser itself is unsure which wait is the base one: do not state it as a fact
+    l = lang if lang in ("en", "hi", "hinglish") else "en"
+    ans = FACT_ANS[field][l].format(n=g["value"])
+    if field == "initial_wait" and re.search(r"accident", g["quote"], re.I):
+        ans += FACT_ANS["initial_wait+accident"][l]
+    if g.get("note") and field != "initial_wait" and len(g["note"]) < 160:
+        ans += FACT_NOTE[l].format(v=g["note"].rstrip("."))
+    clause = {"text": g["quote"], "page": g.get("pdf_page"), "printed_page": g.get("printed_page"),
+              "section": g.get("section") or "", "policy_id": policy_id, "product": ""}
+    return {"answer": ans, "citations": [card(clause, 1, ans, question)], "field": field}
 
 
 WAITLIST_ANS = {
