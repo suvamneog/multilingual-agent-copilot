@@ -1,0 +1,22 @@
+{
+  "profile": "Woman, 55, Guwahati, Assam, individual, Rs 10 lakh sum insured, 1 year, no add-ons",
+  "checked": "2026-11-11",
+  "rules": [
+    "Premium is NOT in any policy wording. These figures are from insurer prospectus rate charts / secondary quote pages, not from wordings.",
+    "All figures are standard / healthy-person rates, before diabetes loading. Diabetes loading is decided by the insurer after the health check, usually 10-40%, up to 100-150% in some cases.",
+    "Individual health insurance GST is 0% since 22 Sep 2025.",
+    "DO NOT use Rs 31,877 for Rs 10 lakh, or Rs 22,000 for Rs 7.5 lakh, for HDFC Optima Secure. Neither was found in any source. Verified Rs 10 lakh figure is Rs 34,569 Tier 6. Rs 7.5 lakh is not a column in the HDFC rate table.",
+    "For plans marked not_found, show 'Not found - get a live quote', do NOT estimate from Rs 15 lakh Delhi figures.",
+    "Generali figure is from an older UIN GCIHLIP26043V032526, not current GCIHLIP27050V042627. Verify before quoting."
+  ],
+  "premiums": [
+    {"plan": "Care Freedom", "annual_premium_inr": 20424, "ped_wait_months": 24, "cover_from": "2028-11-11", "source": "PolicyX, Care Freedom 2, age 51-55, Rs 10L", "notes": "Diabetes/hypertension plan, 20% copay"},
+    {"plan": "Niva ReAssure 2.0", "uin": "NBHHLIP27054V032627", "annual_premium_inr": 23888, "source": "Niva rate card June 2026, Zone 2, via bestworstinsurance.com"},
+    {"plan": "Star Family Health Optima", "uin": "SHAHLIP26046V092526", "annual_premium_inr": 27389, "source": "Star prospectus, Premium Chart, Zone D, 1 adult, age 51-55, Rs 10L"},
+    {"plan": "Generali Central Health Absolute", "uin_old": "GCIHLIP26043V032526", "annual_premium_inr": 33764, "ped_wait_months": 24, "cover_from": "2028-11-11", "source": "Generali prospectus, Annexure I, age 51-55, Rs 10L"},
+    {"plan": "HDFC ERGO Optima Secure V08", "uin": "HDFHLIP26058V082526", "annual_premium_inr": 34569, "ped_wait_months": 36, "cover_from": "2029-11-11", "source": "HDFC prospectus, Tier 6, p90-91, age 55, Rs 10L"},
+    {"plan": "Liberty General HealthPrime Connect", "annual_premium_inr": null, "ped_wait_months": 36, "cover_from": "2029-11-11"},
+    {"plan": "Aditya Birla Activ One", "annual_premium_inr": null, "ped_wait_months": 24, "cover_from": "2028-11-11"},
+    {"plan": "Care Supreme", "annual_premium_inr": null}
+  ]
+}

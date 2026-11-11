@@ -366,6 +366,41 @@ async function needFirst(localNeed) {
 const notWritten = (p, note) => add("bot", `<span class="badge b-warn">Not written in this product</span>
   <p class="lead">This is not written in ${esc(C.fullName(p))}.</p>${note ? `<p class="small">${esc(note)}</p>` : ""}`);
 
+/* the insurer's official rate chart, when one is loaded for this product (premium.py) — never the wording */
+async function rateCard(p, text, box) {
+  /* "premium for 55, Pune": a bare two-digit number is the age, unless it is an amount (10 lakh, 5L, 20k) */
+  const bare = text.match(/\b(\d{1,2})\b(?!\s*(?:lakh|lac|l\b|k\b|cr|crore|%|,\d{3}|months?|days?))/i);
+  const age = C.parseNeed(text).age ?? (bare ? +bare[1] : null) ?? S.need?.age ?? null;
+  const city = `${text} ${S.needText || ""}`;
+  let r;
+  try {
+    const q = new URLSearchParams({ product: p.id, city });
+    if (age !== null) q.set("age", age);
+    r = await (await fetch(`/api/premium?${q}`)).json();
+  } catch { return; }
+  const inr = (n) => "₹" + Number(n).toLocaleString("en-IN");
+  const lakh = (n) => `₹${n / 100000} lakh`;
+  /* the Quickinsure money chart: one fixed profile, shown with that profile so it is never read as this customer's price */
+  const pq = r?.profile_quote;
+  const rules = r?.rules ? `<p class="small">${esc(r.rules.loading)} ${esc(r.rules.gst)}</p>` : "";
+  const pqHtml = !pq ? "" : pq.found
+    ? `<div class="kit" data-money="1"><p><b>Quickinsure money chart:</b> <b>${inr(pq.annual_premium_inr)} per year</b></p>
+        <p class="small">Profile: ${esc(pq.profile)}. Source: ${esc(pq.source || "")}${pq.uin ? ` (UIN ${esc(pq.uin)})` : ""}, checked ${esc(pq.checked)}.${pq.notes ? ` ${esc(pq.notes)}.` : ""}</p>
+        ${pq.warning ? `<p class="stopline">${esc(pq.warning)}</p>` : ""}</div>`
+    : `<div class="kit" data-money="0"><p><b>Quickinsure money chart:</b> Not found — get a live quote from the insurer.</p>
+        <p class="small">Profile checked: ${esc(pq.profile)}, ${esc(pq.checked)}. No figure is estimated.</p></div>`;
+  if (!r?.available) { if (pq) box.innerHTML = pqHtml + rules; return; }
+  const src = `<p class="small">Source: <a href="${esc(r.source_url)}" target="_blank">${esc(r.source)}</a> (UIN ${esc(r.uin)}), checked ${esc(r.checked_on)}. ${esc(r.basis)}. GST ${esc(r.gst)}. Final premium is set by the insurer after the health check.</p>`;
+  if (r.need === "age") {
+    box.innerHTML = `${pqHtml}<p><b>Official rate chart is loaded for this product.</b> Tell me the age and city (for example “premium for 55, Pune”) and I'll show the exact chart price.</p>${src}${rules}`;
+    return;
+  }
+  if (r.need) { box.innerHTML = `${pqHtml}<p>This age is not in the insurer's rate chart.</p>${src}${rules}`; return; }
+  const where = r.zone ? `Zone ${esc(r.zone)} (${esc(r.zone_places)})` : `all ${r.zones_shown} zones — name the city for the exact one`;
+  const rows = r.prices.map((x) => `<li>${lakh(x.sum_insured)}: <b>${x.min === x.max ? inr(x.min) : `${inr(x.min)} – ${inr(x.max)}`}</b> per year</li>`).join("");
+  box.innerHTML = `${pqHtml}<p><b>From the insurer's official rate chart</b> — age ${r.age} (band ${esc(r.age_band)}), 1 adult, ${where}:</p><ul>${rows}</ul>${src}${rules}`;
+}
+
 function answer(p, text) {
   const t0 = performance.now();
   const intent = C.classify(text);
@@ -377,9 +412,12 @@ function answer(p, text) {
     if (f?.stated) {
       return add("bot", `<span class="badge b-ok">Fast answer</span><p class="lead">Premium: ₹${esc(Number(f.value).toLocaleString("en-IN"))}.</p><div class="meta">${ms(t0)} ms</div>`);
     }
-    return add("bot", `${stopNote}<span class="badge b-warn">Not written in this product</span>
+    const el = add("bot", `${stopNote}<span class="badge b-warn">Not written in this product</span>
       <p class="lead">Premium is not written in this wording. Money is not compared. Premium comes from the insurer rate card after the health check.</p>
+      <div class="rate" data-rate="1"></div>
       <div class="meta">Answered in ${ms(t0)} ms</div>`);
+    rateCard(p, text, el.querySelector("[data-rate]"));
+    return el;
   }
   if (intent?.kind === "fast" && !C.isUpload(p)) {
     const a = C.simpleAnswer(p, intent.id);
@@ -572,7 +610,9 @@ function send(raw) {
     if (matches.length === 1) return pick(matches[0].id, { pendingQ: intent ? text : null });
     return askWhich(matches, intent ? text : null);
   }
-  if (C.isNeed(need, !!S.selected)) { S.choices = null; S.pending = null; return needFirst(need); }
+  /* "premium for 55, Pune" on a picked product asks its rate chart; it is not a new customer story */
+  if (S.selected && intent?.kind === "premium") return answer(S.byId.get(S.selected), text);
+  if (C.isNeed(need, !!S.selected)) { S.choices = null; S.pending = null; S.needText = text; return needFirst(need); }
   /* gate 2: "konsa plan accha hai" with no person, age or illness — ask, never rank a guess */
   if (need.shopping && !need.real && !intent) {
     add("bot", `<p class="lead" data-askneed="1">${esc(C.ASK_NEED[S.lang] || C.ASK_NEED.en)}</p>`);

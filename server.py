@@ -269,6 +269,13 @@ def recommend(req: Need):
     return WORKER.submit(_rec, req.text.strip(), req.mine).result()
 
 
+@app.get("/api/premium")
+def premium(product: str, age: int | None = None, city: str | None = None, family: str = "1A"):
+    """Base premium from the insurer's official rate chart (premium.py). Never from the wording."""
+    from premium import lookup
+    return lookup(product, age, city, family)
+
+
 @app.get("/api/compare")
 def compare(q: str):
     from answer import detect_lang
