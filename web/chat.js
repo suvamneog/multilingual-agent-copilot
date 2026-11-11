@@ -264,7 +264,7 @@ function pitchHtml(p, lang) {
   const id = ++BID;
   const L = k.labels;
   return `<div class="pitch" hidden>
-    <div class="kit"><p class="kit__t">${esc(L.say)}</p>${k.say.map((s) => `<p>${esc(s)}</p>`).join("")}</div>
+    <div class="kit"><p class="kit__t">${esc(L.say)}</p>${k.say.map((s) => `<p${/^(Premium|The premium|प्रीमियम)/.test(s) ? " data-money-say" : ""}>${esc(s)}</p>`).join("")}</div>
     <div class="kit"><p class="kit__t">${esc(L.wa)}</p><pre class="wa" id="wa${id}">${esc(k.whatsapp)}</pre>
       <div class="kit__row"><button type="button" class="btn btn--sm" data-act="copy" data-src="wa${id}">Copy</button>
       <a class="btn btn--sm btn--ghost" href="https://wa.me/?text=${encodeURIComponent(k.whatsapp)}" target="_blank" rel="noopener">WhatsApp</a></div></div>
@@ -313,8 +313,20 @@ function recCard(c, rank, r, need, lang) {
       <button type="button" class="btn${rank === 1 ? "" : " btn--ghost"} btn--sm" data-act="pick" data-id="${esc(p.id)}">${esc(L.pick)}</button>
       <button type="button" class="pitch-btn" data-act="pitch" aria-expanded="false">${esc(L.pitch)} <span aria-hidden="true">▾</span></button>
     </div>
+    <p class="rec__line" data-money-card="${esc(p.id)}"></p>
     ${pitchHtml(p, lang)}
   </div>`;
+}
+
+/* fill the money line on each ranked card once its figure arrives */
+function fillMoney(root, need, lang) {
+  root.querySelectorAll("[data-money-card]").forEach(async (el) => {
+    const p = S.byId.get(el.dataset.moneyCard);
+    const line = p && await moneyLine(p, need, lang);
+    const say = el.closest(".rec")?.querySelector("[data-money-say]");   /* the card's "How to pitch" panel */
+    if (line && say) say.textContent = line;
+    if (line) el.innerHTML = `<b>${esc(line)}</b>`; else el.remove();
+  });
 }
 
 /* need-first: the server parses the need (negation as a filter) and ranks on it from the wordings */
@@ -354,17 +366,60 @@ async function needFirst(localNeed) {
     ? `<details class="others"><summary>${lang === "hi" ? "बाकी क्यों नहीं" : lang === "hinglish" ? "Baaki kyun nahi" : "Why not the others"}</summary><ul>${r.others.map((o) =>
         `<li><b>${esc(o.products.join(", "))}</b> — ${esc(o.reason)}</li>`).join("")}</ul></details>`
     : "";
-  add("bot rich", `${answer.map((line, i) => `<p class="${i === 0 ? "lead" : ""}">${esc(line)}</p>`).join("")}${scope}
+  const msg = add("bot rich", `${answer.map((line, i) => `<p class="${i === 0 ? "lead" : ""}">${esc(line)}</p>`).join("")}${scope}
     ${cards ? `<div class="recs">${cards}</div>` : ""}
     ${watch}
     ${others}
     <div class="meta">${lang === "hi" ? `${r.checked} पॉलिसी की वर्डिंग · ${ms(t0)} ms` : lang === "hinglish" ? `${r.checked} policies ki wording check · ${ms(t0)} ms` : `Read ${r.checked} policy wordings in ${ms(t0)} ms`}</div>`);
+  fillMoney(msg, need, lang);
 }
 
 /* ── feature 4: simple vs hard ─────────────────────────── */
 
 const notWritten = (p, note) => add("bot", `<span class="badge b-warn">Not written in this product</span>
   <p class="lead">This is not written in ${esc(C.fullName(p))}.</p>${note ? `<p class="small">${esc(note)}</p>` : ""}`);
+
+/* money for one product and one customer: the insurer's official rate chart for that age and city, else the
+   Quickinsure money chart only when the customer is in its age band (51-55). Returns one short line or null. */
+const MONEY_T = {
+  en: { chart: (x, si, where) => `Premium: ${x} a year for ${si} (insurer's official rate chart, ${where}), before any illness loading.`,
+        prof: (x, warn) => `Premium: ${x} a year for a 55-year-old, ₹10 lakh (Quickinsure money chart), healthy rate before diabetes loading.${warn ? " Older version: verify before quoting." : ""}`,
+        none: "Premium: not found in the money chart — get a live quote from the insurer." },
+  hinglish: { chart: (x, si, where) => `Premium: ${x} saal ka, ${si} cover (insurer ka official rate chart, ${where}), bimari loading se pehle.`,
+        prof: (x, warn) => `Premium: ${x} saal ka, 55 saal, ₹10 lakh cover (Quickinsure money chart) — healthy rate, diabetes loading alag se.${warn ? " Purana version: quote se pehle confirm karo." : ""}`,
+        none: "Premium: money chart mein nahi mila — insurer se live quote lo." },
+  hi: { chart: (x, si, where) => `प्रीमियम: ${x} सालाना, ${si} कवर (इंश्योरर का official rate chart, ${where}), बीमारी loading से पहले।`,
+        prof: (x, warn) => `प्रीमियम: ${x} सालाना, 55 साल, ₹10 लाख कवर (Quickinsure money chart) — healthy rate, डायबिटीज़ loading अलग।${warn ? " पुराना version: quote से पहले कन्फ़र्म करें।" : ""}`,
+        none: "प्रीमियम: money chart में नहीं मिला — इंश्योरर से live quote लें।" },
+};
+const MONEY = new Map();
+async function moneyFor(p, age, city) {
+  const key = `${p.id}|${age}|${city || ""}`;
+  if (!MONEY.has(key)) {
+    const q = new URLSearchParams({ product: p.id, city: city || "" });
+    if (age !== null && age !== undefined) q.set("age", age);
+    MONEY.set(key, fetch(`/api/premium?${q}`).then((r) => r.json()).catch(() => null));
+  }
+  return MONEY.get(key);
+}
+async function moneyLine(p, need, lang) {
+  const T = MONEY_T[lang] || MONEY_T.en;
+  const age = need?.age ?? null;
+  const r = await moneyFor(p, age, S.needText || "");
+  if (!r) return null;
+  const inr = (n) => "₹" + Number(n).toLocaleString("en-IN");
+  if (r.available && r.prices) {
+    const x = r.prices.find((v) => v.sum_insured === 1000000) || r.prices[0];
+    const val = x.min === x.max ? inr(x.min) : `${inr(x.min)}–${inr(x.max)}`;
+    const where = r.zone ? `age ${r.age}, Zone ${r.zone}` : `age ${r.age}, by city zone`;
+    return T.chart(val, `₹${x.sum_insured / 100000} lakh`, where);
+  }
+  const pq = r.profile_quote;
+  if (!pq) return null;
+  if (!pq.found) return T.none;
+  if (age !== null && age >= 51 && age <= 55) return T.prof(inr(pq.annual_premium_inr), !!pq.warning);
+  return null;   /* the money chart is for a 55-year-old: never shown as another age's price */
+}
 
 /* the insurer's official rate chart, when one is loaded for this product (premium.py) — never the wording */
 async function rateCard(p, text, box) {
@@ -379,27 +434,59 @@ async function rateCard(p, text, box) {
     r = await (await fetch(`/api/premium?${q}`)).json();
   } catch { return; }
   const inr = (n) => "₹" + Number(n).toLocaleString("en-IN");
-  const lakh = (n) => `₹${n / 100000} lakh`;
+  const lang = S.lang || "en";
+  const T = RATE_T[lang] || RATE_T.en;
+  const lakh = (n) => T.lakh(n / 100000);
+  const badge = box.closest(".msg")?.querySelector("[data-money-badge]");
+  const found = () => { if (badge) { badge.className = "badge b-ok"; badge.textContent = T.badge; } };
   /* the Quickinsure money chart: one fixed profile, shown with that profile so it is never read as this customer's price */
   const pq = r?.profile_quote;
-  const rules = r?.rules ? `<p class="small">${esc(r.rules.loading)} ${esc(r.rules.gst)}</p>` : "";
+  const rules = r?.rules ? `<p class="small">${esc(T.rules)}</p>` : "";
   const pqHtml = !pq ? "" : pq.found
-    ? `<div class="kit" data-money="1"><p><b>Quickinsure money chart:</b> <b>${inr(pq.annual_premium_inr)} per year</b></p>
-        <p class="small">Profile: ${esc(pq.profile)}. Source: ${esc(pq.source || "")}${pq.uin ? ` (UIN ${esc(pq.uin)})` : ""}, checked ${esc(pq.checked)}.${pq.notes ? ` ${esc(pq.notes)}.` : ""}</p>
-        ${pq.warning ? `<p class="stopline">${esc(pq.warning)}</p>` : ""}</div>`
-    : `<div class="kit" data-money="0"><p><b>Quickinsure money chart:</b> Not found — get a live quote from the insurer.</p>
-        <p class="small">Profile checked: ${esc(pq.profile)}, ${esc(pq.checked)}. No figure is estimated.</p></div>`;
+    ? `<div class="kit" data-money="1"><p><b>Quickinsure money chart:</b> <b>${inr(pq.annual_premium_inr)} ${esc(T.perYear)}</b></p>
+        <p class="small">${esc(T.profile)}: ${esc(pq.profile)}. ${esc(T.source)}: ${esc(pq.source || "")}${pq.uin ? ` (UIN ${esc(pq.uin)})` : ""}, ${esc(T.checked)} ${esc(pq.checked)}.${pq.notes ? ` ${esc(pq.notes)}.` : ""}</p>
+        ${pq.warning ? `<p class="stopline">${esc(T.older)}</p>` : ""}</div>`
+    : `<div class="kit" data-money="0"><p><b>Quickinsure money chart:</b> ${esc(T.notFound)}</p>
+        <p class="small">${esc(T.profile)}: ${esc(pq.profile)}, ${esc(pq.checked)}. ${esc(T.noEstimate)}</p></div>`;
+  if (pq?.found) found();
   if (!r?.available) { if (pq) box.innerHTML = pqHtml + rules; return; }
-  const src = `<p class="small">Source: <a href="${esc(r.source_url)}" target="_blank">${esc(r.source)}</a> (UIN ${esc(r.uin)}), checked ${esc(r.checked_on)}. ${esc(r.basis)}. GST ${esc(r.gst)}. Final premium is set by the insurer after the health check.</p>`;
+  const src = `<p class="small">${esc(T.source)}: <a href="${esc(r.source_url)}" target="_blank">${esc(r.source)}</a> (UIN ${esc(r.uin)}), ${esc(T.checked)} ${esc(r.checked_on)}. ${esc(T.basis)}</p>`;
   if (r.need === "age") {
-    box.innerHTML = `${pqHtml}<p><b>Official rate chart is loaded for this product.</b> Tell me the age and city (for example “premium for 55, Pune”) and I'll show the exact chart price.</p>${src}${rules}`;
+    box.innerHTML = `${pqHtml}<p><b>${esc(T.askAge)}</b></p>${src}${rules}`;
     return;
   }
-  if (r.need) { box.innerHTML = `${pqHtml}<p>This age is not in the insurer's rate chart.</p>${src}${rules}`; return; }
-  const where = r.zone ? `Zone ${esc(r.zone)} (${esc(r.zone_places)})` : `all ${r.zones_shown} zones — name the city for the exact one`;
-  const rows = r.prices.map((x) => `<li>${lakh(x.sum_insured)}: <b>${x.min === x.max ? inr(x.min) : `${inr(x.min)} – ${inr(x.max)}`}</b> per year</li>`).join("");
-  box.innerHTML = `${pqHtml}<p><b>From the insurer's official rate chart</b> — age ${r.age} (band ${esc(r.age_band)}), 1 adult, ${where}:</p><ul>${rows}</ul>${src}${rules}`;
+  if (r.need) { box.innerHTML = `${pqHtml}<p>${esc(T.noAge)}</p>${src}${rules}`; return; }
+  found();
+  const where = r.zone ? `Zone ${esc(r.zone)} (${esc(r.zone_places)})` : esc(T.allZones(r.zones_shown));
+  const rows = r.prices.map((x) => `<li>${lakh(x.sum_insured)}: <b>${x.min === x.max ? inr(x.min) : `${inr(x.min)} – ${inr(x.max)}`}</b> ${esc(T.perYear)}</li>`).join("");
+  box.innerHTML = `${pqHtml}<p><b>${esc(T.official)}</b> — ${esc(T.age)} ${r.age} (${esc(r.age_band)}), ${esc(T.oneAdult)}, ${where}:</p><ul>${rows}</ul>${src}${rules}`;
 }
+const RATE_T = {
+  en: { badge: "Premium from rate chart", perYear: "per year", profile: "Profile", source: "Source", checked: "checked",
+    older: "This figure is from an older version of the product. Verify with the insurer before quoting.",
+    notFound: "Not found — get a live quote from the insurer.", noEstimate: "No figure is estimated.",
+    rules: "Healthy-person rate, before any loading for diabetes or another illness; the insurer decides loading after the health check (usually 10-40%, up to 100-150% in some cases). GST on individual health insurance is 0% since 22 Sep 2025.",
+    basis: "Base premium, 1 year, before discounts, loadings and optional covers. Final premium is set by the insurer after the health check.",
+    askAge: "The insurer's official rate chart is loaded. Tell me the age and city (for example “premium for 55, Pune”) for the exact chart price.",
+    noAge: "This age is not in the insurer's rate chart.", official: "From the insurer's official rate chart", age: "age",
+    oneAdult: "1 adult", allZones: (n) => `all ${n} zones — name the city for the exact one`, lakh: (n) => `₹${n} lakh` },
+  hinglish: { badge: "Rate chart se premium", perYear: "saal ka", profile: "Profile", source: "Source", checked: "check kiya",
+    older: "Yeh figure product ke purane version ka hai. Quote dene se pehle insurer se confirm karo.",
+    notFound: "Nahi mila — insurer se live quote lo.", noEstimate: "Koi andaaza nahi lagaya.",
+    rules: "Healthy person ka rate hai, diabetes ya bimari ki loading se pehle; loading insurer health check ke baad tay karta hai (aam taur par 10-40%, kabhi 100-150% tak). Individual health insurance par GST 22 Sep 2025 se 0% hai.",
+    basis: "Base premium, 1 saal, discount, loading aur optional cover se pehle. Final premium insurer health check ke baad batata hai.",
+    askAge: "Insurer ka official rate chart loaded hai. Umar aur shehar batao (jaise “premium for 55, Pune”), main exact chart price dikhaunga.",
+    noAge: "Yeh umar insurer ke rate chart mein nahi hai.", official: "Insurer ke official rate chart se", age: "umar",
+    oneAdult: "1 adult", allZones: (n) => `saare ${n} zones — exact ke liye shehar batao`, lakh: (n) => `₹${n} lakh` },
+  hi: { badge: "रेट चार्ट से प्रीमियम", perYear: "सालाना", profile: "प्रोफ़ाइल", source: "स्रोत", checked: "जाँचा",
+    older: "यह आंकड़ा प्रोडक्ट के पुराने version का है। quote से पहले इंश्योरर से कन्फ़र्म करें।",
+    notFound: "नहीं मिला — इंश्योरर से live quote लें।", noEstimate: "कोई अनुमान नहीं लगाया।",
+    rules: "स्वस्थ व्यक्ति का रेट, डायबिटीज़ या बीमारी की loading से पहले; loading इंश्योरर हेल्थ चेक के बाद तय करता है (आमतौर पर 10-40%, कभी 100-150% तक)। व्यक्तिगत हेल्थ इंश्योरेंस पर GST 22 सितंबर 2025 से 0% है।",
+    basis: "बेस प्रीमियम, 1 साल, छूट, loading और optional cover से पहले। अंतिम प्रीमियम इंश्योरर हेल्थ चेक के बाद बताता है।",
+    askAge: "इंश्योरर का official rate chart लोड है। उम्र और शहर बताइए (जैसे “premium for 55, Pune”)।",
+    noAge: "यह उम्र इंश्योरर के rate chart में नहीं है।", official: "इंश्योरर के official rate chart से", age: "उम्र",
+    oneAdult: "1 वयस्क", allZones: (n) => `सभी ${n} zones — सटीक के लिए शहर बताइए`, lakh: (n) => `₹${n} लाख` },
+};
 
 function answer(p, text) {
   const t0 = performance.now();
@@ -412,8 +499,15 @@ function answer(p, text) {
     if (f?.stated) {
       return add("bot", `<span class="badge b-ok">Fast answer</span><p class="lead">Premium: ₹${esc(Number(f.value).toLocaleString("en-IN"))}.</p><div class="meta">${ms(t0)} ms</div>`);
     }
-    const el = add("bot", `${stopNote}<span class="badge b-warn">Not written in this product</span>
-      <p class="lead">Premium is not written in this wording. Money is not compared. Premium comes from the insurer rate card after the health check.</p>
+    const lang = S.lang || "en";
+    const lead = {
+      en: "Premium is not written in this wording. Money is not compared. Premium comes from the insurer rate card after the health check.",
+      hinglish: "Premium policy wording mein nahi likha hota. Paisa compare nahi kiya. Premium insurer ke rate card se health check ke baad aata hai.",
+      hi: "प्रीमियम पॉलिसी वर्डिंग में नहीं लिखा होता। पैसे की तुलना नहीं की गई। प्रीमियम हेल्थ चेक के बाद इंश्योरर के rate card से आता है।",
+    }[lang] || "";
+    const badge = { en: "Premium", hinglish: "Premium", hi: "प्रीमियम" }[lang] || "Premium";
+    const el = add("bot", `${stopNote}<span class="badge b-warn" data-money-badge>${esc(badge)}</span>
+      <p class="lead">${esc(lead)}</p>
       <div class="rate" data-rate="1"></div>
       <div class="meta">Answered in ${ms(t0)} ms</div>`);
     rateCard(p, text, el.querySelector("[data-rate]"));
@@ -519,7 +613,7 @@ function closeKitMsg(p) {
   const id = ++BID;
   const L = k.labels;
   const el = add("bot rich", `<p class="kit__h">${esc(L.pitch)} · ${esc(C.fullName(p))}</p>
-    <div class="kit"><p class="kit__t">${esc(L.say)}</p>${k.say.map((s) => `<p>${esc(s)}</p>`).join("")}</div>
+    <div class="kit"><p class="kit__t">${esc(L.say)}</p>${k.say.map((s) => `<p${/^(Premium|The premium|प्रीमियम)/.test(s) ? " data-money-say" : ""}>${esc(s)}</p>`).join("")}</div>
     <div class="kit"><p class="kit__t">${esc(L.wa)}</p><pre class="wa" id="wa${id}">${esc(k.whatsapp)}</pre>
       <div class="kit__row"><button type="button" class="btn btn--sm" data-act="copy" data-src="wa${id}">Copy</button>
       <a class="btn btn--sm btn--ghost" href="https://wa.me/?text=${encodeURIComponent(k.whatsapp)}" target="_blank" rel="noopener">WhatsApp</a></div></div>
@@ -528,6 +622,20 @@ function closeKitMsg(p) {
       : `<p>${lang === "en" ? "Not written in this product." : "Is product mein nahi likha."}</p>`}</div>
     ${kitLists(k, L, lang)}`);
   el.dataset.kit = kitKey;
+  /* money: the chart figure replaces "premium comes later" in Say this, and is added to the WhatsApp text */
+  moneyLine(p, S.need, lang).then((line) => {
+    if (!line) return;
+    const sayEl = el.querySelector("[data-money-say]");
+    if (sayEl) sayEl.textContent = line;
+    const pre = el.querySelector(`#wa${id}`);
+    if (pre) {
+      const lines = pre.textContent.split("\n");
+      lines.splice(Math.max(1, lines.length - 1), 0, `• ${line}`);
+      pre.textContent = lines.join("\n");
+      const a = el.querySelector('a[href^="https://wa.me/"]');
+      if (a) a.href = `https://wa.me/?text=${encodeURIComponent(pre.textContent)}`;
+    }
+  });
   return el;
 }
 
