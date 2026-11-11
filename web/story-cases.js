@@ -88,12 +88,12 @@ window.STORY_CASES = [
 
   /* ── feature 4: simple and hard, on Optima Secure V08 ────── */
   { f: 4, name: "EN simple questions", steps: [V08,
-    { say: "How much will the premium be?", expect: [/Premium is not written in this wording/, /rate card/, /Quickinsure money chart|official rate chart/] },
+    { say: "How much will the premium be?", expect: [/Premium is not written in this wording/, /rate card/, /₹34,569/] },
     { say: "What is the waiting time?", expect: [/Fast answer/i, /36 months/, "{D36}"] },
     { say: "What is the room rent?", expect: [/Fast answer/i, /At Actuals/i] },
     { say: "What is the age limit?", expect: [/Fast answer/i, /No upper limit/i] }] },
   { f: 4, name: "HL simple questions", steps: [V08,
-    { say: "premium kitna hoga?", expect: [/Premium policy wording mein nahi likha hota/, /Quickinsure money chart|official rate chart/] },
+    { say: "premium kitna hoga?", expect: [/Premium policy wording mein nahi likha hota/, /₹34,569/] },
     { say: "waiting time kitna hai?", expect: [/36 months/] },
     { say: "room rent kya hai?", expect: [/At Actuals/i] },
     { say: "age limit kya hai?", expect: [/No upper limit/i] }] },
